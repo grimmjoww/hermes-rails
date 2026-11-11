@@ -427,7 +427,7 @@ def _cua_setup(tmp_path, monkeypatch, mode="on", vision=True, ask="can you use c
 def test_a_computer_use_ask_steers_to_computer_use_and_d3(tmp_path, monkeypatch):
     rails, ctx, steer = _cua_setup(tmp_path, monkeypatch)
     assert "computer_use" in steer["context"] and "screen_find" in steer["context"]
-    assert "Start with jev_computer_use" in steer["context"] and "screen_find" in steer["context"]
+    assert "Drive computer_use" in steer["context"] and "screen_check" in steer["context"]
 
 
 def test_jev_on_d3_is_allowed_and_counts_only_when_d3_saw_it_done(tmp_path, monkeypatch):

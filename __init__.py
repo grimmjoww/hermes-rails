@@ -676,7 +676,7 @@ def register(ctx):
                 _WF.pop(next(iter(_WF)))
             wf = _WF.setdefault(session, {"loaded": set()})
             wf.update(turn=turn, kind=None, p=0.0, need=None, tests=[], handle=None, wf_text=None,
-                      screen_actions=0, last_action_at=0.0)
+                      screen_actions=0, last_action_at=0.0, screen_checked=False)
         if WORKFLOW_MODE == "off" or len(ask.strip()) < 4:
             return None
         found = classify_turn(session, turn, ask, previous)
@@ -771,6 +771,7 @@ def register(ctx):
             return None
         ask = (_ASKS.get(session_id or "-") or {}).get("ask", "")
         verdict = visual_check(ask, wf.get("last_action_at", 0.0))
+        wf["screen_checked"] = True
         _log({"session": session_id, "kind": "screen_verify", "mode": VISUAL_MODE, "attempt": attempt, **verdict})
         if verdict["result"] == "done":
             wf_tag(wf, f"✅ screen check: looks finished (p {verdict['p_done']:.2f})")
@@ -812,16 +813,15 @@ def register(ctx):
         if CUA_MODE != "on":
             return None
         if vision:
-            how = ("d3-turbo (Computer Use Vision) decides; you act. Start with jev_computer_use: it runs the whole "
-                   "goal on his real screen, d3 choosing every step. Give it app (the window, e.g. 'brave'), a "
-                   "start_url for a web goal, and targets as a plain list naming what to click, specifically. When you "
-                   "drive computer_use yourself, every click or typing needs a d3 decision on your latest screenshot "
-                   "first: screen_find (where is the thing you name) or decide (which of the options); Rails holds "
-                   "any that d3 didn't decide. If jev returns abstained, blocked or error, read its reason and try "
-                   "again, better aimed.")
+            how = ("d3-turbo (Computer Use Vision) decides; you act. Drive computer_use: capture the screen, ask d3 "
+                   "about that screenshot first (screen_find: where is the thing you name, or decide: which of the "
+                   "options), click or type on its answer, then capture again and confirm with screen_check. Rails "
+                   "holds any click or typing that d3 didn't decide on the latest screenshot. If a jev_computer_use "
+                   "tool is installed you may also hand it the whole goal; if it returns abstained, blocked or error, "
+                   "drive computer_use yourself as above instead of retrying it the same way.")
         else:
-            how = ("Computer Use Vision (d3-turbo) is OFF right now, so jev_computer_use can't see. Do not try "
-                   "another way: tell Willie in one line to turn on Computer Use Vision, and stop.")
+            how = ("Computer Use Vision (d3-turbo) is OFF right now, so Rails can't check the screen for you. Do not "
+                   "try another way: tell Willie in one line to turn on Computer Use Vision, and stop.")
         return ("[Rails, the harness, not a message from Willie] Willie asked for computer use: drive his real "
                 "desktop (mouse, keyboard, his own browser). " + how +
                 " Do not use browser_* or Playwright as a stand-in. If computer use fails, tell "
@@ -879,6 +879,7 @@ def register(ctx):
             data = _json_dict(result)
             if data.get("backend") == "d3_vision" and data.get("status") == "completion_candidate":
                 turn["ok"] += 1
+                (_WF.get(session) or {})["screen_checked"] = True  # d3 itself saw the goal finished on screen
                 return None
             why = (f"jev_computer_use {data.get('backend', '?')} {data.get('status', '?')}: {data.get('reason')}"
                    if data else tool_failure(result, status, error_message) or "jev_computer_use returned nothing usable")
@@ -902,9 +903,10 @@ def register(ctx):
         _post(f"⚠ computer use failed: {why}")
         return ("[Rails, the harness, not a message from Willie] This computer-use step FAILED: " + why +
                 ". Rails has already shown Willie this, so do not stop to report it. Keep going with exactly what "
-                "he asked: call jev_computer_use again, better aimed (read its reason; clearer targets, the right "
-                "app or start_url). Never switch to browser use or drive computer_use yourself, and never call the "
-                "task done unless it really worked.")
+                "he asked: read the reason and try again, better aimed, or call jev_computer_use again, better aimed "
+                "(clearer targets, the right app or start_url), or drive computer_use yourself (capture, screen_find, "
+                "act, screen_check). Never switch to browser use, and never call the task done unless it really "
+                "worked.")
 
     def on_transform_tool_result(tool_name="", args=None, result=None, session_id="", status="",
                                  error_message="", **_):
@@ -914,8 +916,29 @@ def register(ctx):
         text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
         return text + "\n\n" + note
 
+    def turn_end_screen_check(session_id):
+        """Hermes fires pre_verify only after file edits, so a screen-only turn would end unchecked. Here the
+        newest screenshot is still checked at the end of the turn: it can't send the agent back any more, so the
+        result is shown as a tag (and logged) for Willie to see."""
+        wf = _WF.get(session_id or "-") or {}
+        if VISUAL_MODE == "off" or not wf.get("screen_actions") or wf.get("screen_checked"):
+            return
+        wf["screen_checked"] = True
+        ask = (_ASKS.get(session_id or "-") or {}).get("ask", "")
+        verdict = visual_check(ask, wf.get("last_action_at", 0.0))
+        _log({"session": session_id, "kind": "screen_verify", "mode": VISUAL_MODE, "at": "turn_end", **verdict})
+        if verdict["result"] == "done":
+            wf_tag(wf, f"✅ screen check: looks finished (p {verdict['p_done']:.2f})")
+        else:
+            wf_tag(wf, f"⚠ screen check at the end: {verdict['why']} · don't trust a \"done\" from this turn")
+
     def on_post_llm_call(session_id="", **_):
         """End of turn: a computer-use ask where computer_use never worked is said out loud, never silent."""
+        try:
+            turn_end_screen_check(session_id)
+        except Exception as error:  # noqa: BLE001 - a tag must never break the turn
+            _log({"session": session_id, "kind": "screen_verify", "at": "turn_end", "result": "check_error",
+                  "error": repr(error)[:160]})
         with _LOCK:
             turn = _CUA.pop(session_id or "-", None)
         if turn is None or turn["ok"]:
@@ -957,7 +980,7 @@ def register(ctx):
     def on_pre_tool_call(tool_name="", args=None, session_id="", turn_id="", **_):
         apply_settings(ctx)
         args = args if isinstance(args, dict) else {}
-        if tool_name == "computer_use" and args.get("action") not in SCREEN_LOOK_ACTIONS:
+        if (tool_name == "computer_use" and args.get("action") not in SCREEN_LOOK_ACTIONS) or tool_name == JEV_VISION_TOOL:
             with _LOCK:  # the screen check at "done" needs to know the agent changed something on screen
                 wf = _WF.setdefault(session_id or "-", {"loaded": set()})
                 wf["screen_actions"] = wf.get("screen_actions", 0) + 1

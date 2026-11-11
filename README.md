@@ -18,6 +18,8 @@ Every decision is shown inline as a tag (⚖ ✅ ⛔ ❌) and written to a decis
   and calls out "rabbit holes" past `look_step_budget` steps on a look-only question.
 - **Workflow gate** (`workflow_mode`): code work loads the matching skill first, and "done" after code edits needs a test run.
 - **Screen check** (`screen_check_mode`): after clicking/typing on screen, a vision model checks the screen before "done".
+  Hermes only runs its `pre_verify` gate after file edits, so a screen-only turn is also checked at the end of the turn
+  and the result is shown as a tag.
 - **Computer-use gate** (`computer_use_mode`): when you ask for computer use, steers the agent to `computer_use` with d3 as its eyes.
 - **Prompt-injection watch**: tool results are checked in the background; a hit is one ⚠ line and a log entry. It never blocks.
 - **Tools** (toolset `decisions`): `decide`, `screen_find`, `screen_check`, `video_check`.
