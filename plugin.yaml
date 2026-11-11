@@ -1,0 +1,53 @@
+name: rails
+version: "0.2.0"
+description: "Keeps the agent on what Willie asked and shows every decision. d1-3B (local, Decision Guard) decides; Rails shows ⚖ ✅ ⛔ ❌ tags. Scope gate (watch-only) + workflow gate: code work loads the matching superpowers skill first, and 'done' after code edits needs a test run."
+author: "Claude Code for Willie (ideas from kerpopule/hermes-jev-skills: shadow mode, decision log)"
+requires_hermes: ">=0.22.0"
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - pre_verify
+  - post_tool_call
+  - post_llm_call
+  - transform_tool_result
+provides_tools:  # toolset "decisions": d3 on Willie's PC (eyes.py); off layers are named, never faked
+  - decide
+  - screen_find
+  - screen_check
+  - video_check
+config_schema:
+  workflow_mode:
+    type: str
+    choices: ["on", shadow, "off"]
+    default: "on"
+    label: "Superpowers workflow gate"
+    description: "on: code work loads the right superpowers skill first, and 'done' needs a test run. shadow: only show what it would do. off: nothing."
+  scope_mode:
+    type: str
+    choices: [shadow, block]
+    default: shadow
+    label: "Scope gate"
+    description: "shadow: show work you didn't ask for (⚖ would block). block: stop it and have Rei offer it in one line instead."
+  screen_check_mode:
+    type: str
+    choices: ["on", shadow, "off"]
+    default: shadow
+    label: "Screen check before 'done'"
+    description: "After clicking or typing on screen, Computer Use Vision looks at the newest screenshot before Rei says done. on = an unfinished screen, an error, or no fresh look sends her back. shadow = only shows what it would do. off = no check."
+  computer_use_mode:
+    type: str
+    choices: ["on", shadow, "off"]
+    default: "on"
+    label: "Computer use means computer_use + d3-turbo"
+    description: "When you ask for computer use: on = Rei is told to use computer_use on your real desktop with Computer Use Vision (d3-turbo) as her eyes, jev_computer_use / other browsers are held, and if computer use never worked you get a ⚠ line at the end. shadow = only shows it. off = nothing."
+  second_opinion_mode:
+    type: str
+    choices: ["on", shadow, "off"]
+    default: "off"
+    label: "Second opinion when d1 is unsure"
+    description: "When d1 is under 60% sure about the kind of turn, look vs change, or a skill: on = d3-ultra decides (about 3 s, needs 'Decision Second Opinion' on). shadow = d3-ultra is asked in the background and the log shows what it would change. off = d1 only."
+  look_step_budget:
+    type: int
+    default: 8
+    label: "Steps allowed on a look-only question"
+    description: "Past this many tool calls on a 'check / what is' question, Rails calls it a rabbit hole."
