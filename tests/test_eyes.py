@@ -475,6 +475,7 @@ def test_shadow_only_tags(tmp_path, monkeypatch):
     rails, ctx, steer = _cua_setup(tmp_path, monkeypatch, mode="shadow")
     assert steer is None
     assert ctx.hooks["pre_tool_call"](tool_name="jev_computer_use", args={}, session_id="s", turn_id="t1") is None
+    assert ctx.hooks["pre_tool_call"](tool_name="browser_exec", args={}, session_id="s", turn_id="t1") is None
     assert any("watch only" in t for t in ctx.shown)
 
 

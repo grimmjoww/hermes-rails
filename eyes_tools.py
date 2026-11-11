@@ -100,8 +100,37 @@ def make_handlers(log: Callable[[dict], None]) -> dict[str, Callable[..., str]]:
             return out
         return run("decide", go)
 
+    def find_many(targets: list[str], args: dict) -> dict:
+        """Several targets, one read of the screenshot: a Box plus a yes/no 'is it there' for each."""
+        image = args.get("image_path") or eyes.latest_screenshot()
+        questions = {}
+        for i, target in enumerate(targets):
+            questions[f"where{i}"] = {"type": "box", "instructions": target}
+            questions[f"there{i}"] = {"type": "noul", "instructions": f"Is this in the picture: {target}?"}
+        body = {"state": args.get("context") or "A screenshot of a computer screen.",
+                "images": [eyes.data_url(image)], "questions": questions}
+        out = eyes.decide(body, "vision")
+        size = eyes.image_size(image)
+        found_all, results = True, []
+        for i, target in enumerate(targets):
+            spot = eyes.box_in_pixels(out["answers"][f"where{i}"], *size)
+            visible = round(float(out["answers"][f"there{i}"].get("noul", 0.0)), 3)
+            found = visible >= eyes.FOUND_AT and spot["confidence"] >= eyes.BOX_AT
+            found_all = found_all and found
+            results.append({"target": target, "found": found, "visible_p": visible,
+                            **({"click_at": spot["click_at"], "box_px": spot["box_px"]} if found else {}),
+                            "confidence": spot["confidence"]})
+        return {"answered_by": out["answered_by"], "ms": out["ms"], "found": found_all, "targets": results,
+                "image": str(image), "image_size": list(size),
+                "advice": ("Click each found target's click_at in order, exactly as given (already in the capture's "
+                           "coordinates), without a new capture in between unless the page changed. Skip any that "
+                           "are not found.")}
+
     def screen_find(args: dict, **_: Any) -> str:
         def go() -> dict:
+            many = [str(t).strip() for t in (args.get("targets") or []) if str(t).strip()]
+            if many:
+                return find_many(many[:32], args)
             target = str(args.get("target") or "").strip()
             if not target:
                 raise eyes.D3Error("say what to find, e.g. target='the Save button in the toolbar'")
@@ -193,9 +222,13 @@ SCHEMAS = {
         "parameters": {"type": "object", "properties": {
             "target": {"type": "string", "description": "What to find, said plainly and specifically: "
                                                         "'the blue Save button at the bottom of the dialog'."},
+            "targets": {"type": "array", "items": {"type": "string"},
+                        "description": "Several things to find on the same screenshot in ONE d3 call (up to 32), "
+                                       "e.g. ['the address bar', 'the search box', 'the first search result link']. "
+                                       "Each gets found, click_at and confidence."},
             "image_path": {"type": "string", "description": "Optional screenshot path; default the latest capture."},
             "context": {"type": "string", "description": "Optional one line on what app/screen this is."},
-        }, "required": ["target"]},
+        }, "required": []},
     },
     "screen_check": {
         "name": "screen_check",

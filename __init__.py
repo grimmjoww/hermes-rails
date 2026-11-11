@@ -219,6 +219,9 @@ def ask_d1(state: str, questions: dict) -> dict:
 
 VISUAL_MODE = "shadow"  # screen check at "done" after computer_use actions: "off" | "shadow" (tag only) | "on"
 SCREEN_LOOK_ACTIONS = {"capture", "list_apps", "list_windows", "wait"}  # computer_use actions that change nothing
+# Actions that don't point at a spot on the screen (switching windows, keys, scrolling): d3 has nothing to decide,
+# so the d3 gate lets them through. They still count as screen actions for the end-of-turn check.
+NO_POINT_ACTIONS = {"focus_app", "key", "scroll", "type"}
 DONE_AT = 0.50   # d3-turbo must think the screen shows the task finished at least this much ...
 ERROR_AT = 0.50  # ... and an error/crash dialog showing less than this
 
@@ -836,8 +839,11 @@ def register(ctx):
         if vision:
             how = ("d3-turbo (Computer Use Vision) decides; you act. Drive computer_use: capture the screen, ask d3 "
                    "about that screenshot first (screen_find: where is the thing you name, or decide: which of the "
-                   "options), click or type on its answer, then capture again and confirm with screen_check. Rails "
-                   "holds any click or typing that d3 didn't decide on the latest screenshot. If a jev_computer_use "
+                   "options), click on its answer, then capture again and confirm with screen_check. For several clicks on one "
+                   "screen (a search box, a button, a link), ask screen_find once with targets=[...] and click each "
+                   "click_at in turn without a new capture; only capture again when the page changes. Keys, typing, "
+                   "scrolling and focus_app need no d3 answer. Rails holds any click that d3 didn't decide on the "
+                   "latest screenshot. If a jev_computer_use "
                    "tool is installed you may also hand it the whole goal; if it returns abstained, blocked or error, "
                    "drive computer_use yourself as above instead of retrying it the same way. If screen_find or "
                    "screen_check is not in your tool list, run it through tool_call with that exact name. Click and type "
@@ -859,6 +865,7 @@ def register(ctx):
                                "stopped. Do not try anything else. Reply to Willie now: say exactly what failed "
                                "(the reasons in the results above) and what he can do about it."}
         if turn is not None and tool == CUA_TOOL and args.get("action") not in SCREEN_LOOK_ACTIONS \
+                and args.get("action") not in NO_POINT_ACTIONS \
                 and CUA_MODE == "on" and not turn.get("d3_decided"):  # d3 decides, Rei acts: no decision, no act
             turn["held"].append(f"computer_use {args.get('action')}")
             _log({"session": session, "kind": "cua_undecided_held", "call": _short(tool, args)[:120]})
@@ -1033,14 +1040,15 @@ def register(ctx):
 
         if scheduled_turn(turn_key):  # a cron job's prompt reads like "check X" but the job is meant to work
             return None
-        if (session_id or "-") in _CUA and (tool_name == CUA_TOOL or tool_name in CUA_EYES):
+        if (session_id or "-") in _CUA and (tool_name in (CUA_TOOL, JEV_VISION_TOOL) or tool_name in CUA_EYES):
             return None  # Willie asked for computer use: driving and seeing the screen IS the task
         if tool_name == CUA_TOOL and args.get("action") in SCREEN_LOOK_ACTIONS:
             return None  # looking at the screen changes nothing
 
         if tool_name in SKIP_TOOLS:  # reading costs nothing to check, but it still counts toward a rabbit hole
             found = turn.get("intent") or {}
-            if found.get("intent") == "look" and found.get("p", 0) >= LOOK_ONLY_AT and steps > LOOK_STEP_BUDGET:
+            if found.get("intent") == "look" and found.get("p", 0) >= LOOK_ONLY_AT and steps > LOOK_STEP_BUDGET \
+                    and (session_id or "-") not in _CUA:
                 show(session_id, key, lambda t: t.update(rabbit=steps, look=True))
                 return _rabbit_block(steps)
             return None
@@ -1052,7 +1060,8 @@ def register(ctx):
         found = turn.get("intent") or {"intent": "unclear", "p": 0.0}
         look_only = found["intent"] == "look" and found["p"] >= LOOK_ONLY_AT
         result = judge(ask, previous, tool_name, args, look_only=look_only)
-        rabbit = look_only and steps > LOOK_STEP_BUDGET
+        # Reading a web page with computer use takes many steps by nature: no rabbit-hole count on those turns.
+        rabbit = look_only and steps > LOOK_STEP_BUDGET and (session_id or "-") not in _CUA
         if rabbit and not result["would_block"]:
             result.update(would_block=True, why=f"rabbit hole ({steps} steps on a look-only ask)")
         ms = round((time.perf_counter() - started) * 1000)

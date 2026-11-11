@@ -108,3 +108,57 @@ def test_tool_call_is_judged_by_what_it_runs(tmp_path, monkeypatch):
 def test_steer_says_to_click_in_the_captured_app(tmp_path, monkeypatch):
     rails, ctx, steer = _cua_setup(tmp_path, monkeypatch)
     assert "same app you captured" in steer["context"] and "explorer.exe" in steer["context"]
+
+
+# --- web browsing (2026-11-11): d3 points, the agent clicks; nothing that doesn't point is held ---
+
+def test_keys_typing_scroll_and_focus_need_no_d3_answer(tmp_path, monkeypatch):
+    rails, ctx, steer = _cua_setup(tmp_path, monkeypatch)
+    for action in ("focus_app", "key", "type", "scroll"):
+        assert ctx.hooks["pre_tool_call"](tool_name="computer_use", args={"action": action, "app": "brave.exe"},
+                                          session_id="s", turn_id="t1") is None
+    held = ctx.hooks["pre_tool_call"](tool_name="computer_use", args={"action": "click", "coordinate": [5, 5]},
+                                      session_id="s", turn_id="t1")
+    assert held["action"] == "block"
+    assert "targets=[...]" in steer["context"]
+
+
+def test_screen_find_many_targets_in_one_call(tmp_path, monkeypatch):
+    import json
+    from test_rails import load
+    rails = load(tmp_path)
+    et = rails._eyes_tools()
+    png = tmp_path / "computer_use_x.png"
+    import struct, zlib
+    raw = b"".join(b"\x00" + b"\x00\x00\x00" * 100 for _ in range(50))
+    def chunk(k, d): return struct.pack(">I", len(d)) + k + d + struct.pack(">I", zlib.crc32(k + d) & 0xffffffff)
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 100, 50, 8, 2, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+    sent = []
+    def fake_decide(body, use="auto"):
+        sent.append(body)
+        return {"answered_by": "Computer Use Vision (d3-turbo)", "ms": 900, "answers": {
+            "where0": {"type": "box", "box": {"left": 0.1, "right": 0.3, "top": 0.1, "bottom": 0.3}, "confidence": 0.8},
+            "there0": {"type": "noul", "noul": 0.97},
+            "where1": {"type": "box", "box": {"left": 0.5, "right": 0.6, "top": 0.5, "bottom": 0.6}, "confidence": 0.0},
+            "there1": {"type": "noul", "noul": 0.02}}}
+    monkeypatch.setattr(et.eyes, "decide", fake_decide)
+    out = json.loads(et.make_handlers(lambda e: None)["screen_find"](
+        {"targets": ["the search box", "a purple elephant"], "image_path": str(png)}))
+    assert len(sent) == 1 and len(sent[0]["questions"]) == 4
+    first, second = out["targets"]
+    assert first["found"] and first["click_at"] == [20, 10]
+    assert not second["found"] and "click_at" not in second and out["found"] is False
+
+
+def test_reading_a_web_page_with_computer_use_is_not_a_rabbit_hole(tmp_path, monkeypatch):
+    rails, ctx, steer = _cua_setup(tmp_path, monkeypatch, ask="use computer use to open github.com and tell me what the page says")
+    rails.MODE = "block"
+    from test_rails import fake_d1
+    rails.ask_d1 = fake_d1(intent="look", p_intent=0.95, scope="on_task", p=0.9, changes=0.1)
+    for _ in range(rails.LOOK_STEP_BUDGET + 3):
+        assert ctx.hooks["pre_tool_call"](tool_name="tool_describe", args={}, session_id="s", turn_id="t1") is None
+    assert ctx.hooks["pre_tool_call"](tool_name="jev_computer_use", args={"goal": "read github"},
+                                      session_id="s", turn_id="t1") is None
+    assert ctx.hooks["pre_tool_call"](tool_name="terminal", args={"command": "echo hi"},
+                                      session_id="s", turn_id="t1") is None
