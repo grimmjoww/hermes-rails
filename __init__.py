@@ -899,7 +899,8 @@ def register(ctx):
             return None
         if tool in D3_DECIDERS:  # a d3 answer that can back Rei's next click or typing
             data = _json_dict(result)
-            turn["d3_decided"] = not data.get("error") and data.get("found") is not False
+            turn["d3_decided"] = not data.get("error") and (data.get("found") is not False or any(  # several targets: any one found backs its click
+                isinstance(t, dict) and t.get("found") for t in data.get("targets") or []))
             return None
         if tool == CUA_TOOL and (args or {}).get("action") == "capture":
             turn["d3_decided"] = False  # a new screenshot needs a new decision

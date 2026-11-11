@@ -162,3 +162,12 @@ def test_reading_a_web_page_with_computer_use_is_not_a_rabbit_hole(tmp_path, mon
                                       session_id="s", turn_id="t1") is None
     assert ctx.hooks["pre_tool_call"](tool_name="terminal", args={"command": "echo hi"},
                                       session_id="s", turn_id="t1") is None
+
+
+def test_some_targets_found_still_backs_the_click(tmp_path, monkeypatch):
+    rails, ctx, steer = _cua_setup(tmp_path, monkeypatch, ask="use computer use to open a new tab in brave")
+    res = '{"found": false, "targets": [{"target": "new tab", "found": false}, {"target": "address bar", "found": true, "click_at": [5, 5]}]}'
+    ctx.hooks["transform_tool_result"](tool_name="screen_find", args={"targets": ["new tab", "address bar"]}, result=res,
+                                session_id="s", turn_id="t1")
+    assert ctx.hooks["pre_tool_call"](tool_name="computer_use", args={"action": "click", "x": 5, "y": 5},
+                                      session_id="s", turn_id="t1") is None
