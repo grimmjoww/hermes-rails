@@ -1,7 +1,7 @@
 name: rails
 version: "0.2.0"
 description: "Keeps the agent on what Willie asked and shows every decision. d1-3B (local, Decision Guard) decides; Rails shows ⚖ ✅ ⛔ ❌ tags. Scope gate (watch-only) + workflow gate: code work loads the matching superpowers skill first, and 'done' after code edits needs a test run."
-author: "Claude Code for Willie (ideas from kerpopule/hermes-jev-skills: shadow mode, decision log)"
+author: "grimmjoww"
 requires_hermes: ">=0.22.0"
 provides_hooks:
   - pre_llm_call
