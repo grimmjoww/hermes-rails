@@ -64,3 +64,47 @@ def test_jev_runs_count_as_screen_actions_for_the_turn_end_check(tmp_path, monke
                                session_id="s", turn_id="t1")
     ctx.hooks["post_llm_call"](session_id="s", turn_id="t1")
     assert len(seen) == 1 and seen[0] > 0 and any(t.startswith("✅ screen check") for t in ctx.shown)
+
+
+# --- Hermes Tool Search (2026-11-11 live run): d3 tools are deferred and run through tool_call ---
+
+def test_tool_search_lookups_are_never_judged_or_blocked(tmp_path, monkeypatch):
+    rails, ctx, steer = _cua_setup(tmp_path, monkeypatch)
+    rails.MODE = "block"
+    asked = []
+    rails.ask_d1 = lambda state, q: asked.append(q) or {"scope": {"choice": "side_quest", "probabilities": {"side_quest": 0.95}},
+                                                        "changes": {"noul": 0.9}}
+    for tool in ("tool_search", "tool_describe"):
+        assert ctx.hooks["pre_tool_call"](tool_name=tool, args={"names": ["screen_find"]}, session_id="s", turn_id="t1") is None
+    assert asked == []
+
+
+def test_screen_find_through_tool_call_lets_the_next_click_go(tmp_path, monkeypatch):
+    rails, ctx, steer = _cua_setup(tmp_path, monkeypatch)
+    assert "through tool_call" in steer["context"]
+    call = {"name": "screen_find", "arguments": {"target": "the Recycle Bin icon"}}
+    assert ctx.hooks["pre_tool_call"](tool_name="tool_call", args=call, session_id="s", turn_id="t1") is None
+    held = ctx.hooks["pre_tool_call"](tool_name="computer_use", args={"action": "double_click", "coordinate": [70, 74]},
+                                      session_id="s", turn_id="t1")
+    assert held["action"] == "block"
+    ctx.hooks["transform_tool_result"](tool_name="tool_call", args=call, session_id="s",
+                                       result='{"found": true, "click_at": [70, 74]}')
+    assert ctx.hooks["pre_tool_call"](tool_name="computer_use", args={"action": "double_click", "coordinate": [70, 74]},
+                                      session_id="s", turn_id="t1") is None
+
+
+def test_tool_call_is_judged_by_what_it_runs(tmp_path, monkeypatch):
+    rails, ctx, steer = _cua_setup(tmp_path, monkeypatch, ask="check what is in my downloads folder")
+    rails.MODE = "block"
+    from test_rails import fake_d1
+    rails.ask_d1 = fake_d1(intent="look", p_intent=0.95, scope="side_quest", p=0.95, changes=0.95)
+    held = ctx.hooks["pre_tool_call"](tool_name="tool_call", session_id="s", turn_id="t1",
+                                      args={"calls": [{"name": "mcp__x__delete_file", "arguments": '{"path": "a.zip"}'}]})
+    assert held["action"] == "block" and "scope gate" in held["message"]
+    assert rails.bridged_calls({"calls": [{"name": "mcp__x__delete_file", "arguments": '{"path": "a.zip"}'}]}) == \
+        [("delete_file", {"path": "a.zip"})]
+
+
+def test_steer_says_to_click_in_the_captured_app(tmp_path, monkeypatch):
+    rails, ctx, steer = _cua_setup(tmp_path, monkeypatch)
+    assert "same app you captured" in steer["context"] and "explorer.exe" in steer["context"]

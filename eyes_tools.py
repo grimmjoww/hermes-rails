@@ -121,7 +121,8 @@ def make_handlers(log: Callable[[dict], None]) -> dict[str, Callable[..., str]]:
             elif spot["confidence"] < eyes.SURE_BOX_AT:
                 advice = "Found, but not sure of the exact spot: after clicking, confirm with screen_check."
             else:
-                advice = "Found. Click click_at with computer_use(action='click', coordinate=click_at), then screen_check."
+                advice = ("Found. Click click_at with computer_use(action='click', coordinate=click_at) exactly as given: it "
+                          "is already in the capture's coordinates, so do not scale it. Then capture and screen_check.")
             return {"answered_by": out["answered_by"], "ms": out["ms"], "found": found, "visible_p": visible,
                     **spot, "image": str(image), "image_size": list(size), "advice": advice}
         return run("screen_find", go)
@@ -187,7 +188,8 @@ SCHEMAS = {
             "Find something on the screen and get the point to click. Use when computer_use's numbered elements "
             "do not include the target (games, canvases, unlabeled web apps). Reads the latest computer_use capture "
             "unless image_path is given, and checks the thing is really there. Returns found, click_at [x, y] in "
-            "that screenshot's pixels (pass to computer_use click as coordinate), the box and its confidence."),
+            "that screenshot's pixels (pass to computer_use click as coordinate exactly as given, never rescaled), the box "
+            "and its confidence."),
         "parameters": {"type": "object", "properties": {
             "target": {"type": "string", "description": "What to find, said plainly and specifically: "
                                                         "'the blue Save button at the bottom of the dialog'."},

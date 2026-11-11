@@ -40,7 +40,28 @@ PREVIOUS_CHARS = 800     # how much of the agent's last reply d1 reads (so "ok, 
 CALL_CHARS = 1500        # how much of the tool call d1 reads
 # Pure reading and bookkeeping can't wander off task in a way that costs anything; skip them to stay fast.
 SKIP_TOOLS = {"skill_manage", "read_file", "search_files", "todo", "skill_view", "skills_list", "clarify", "session_search",
-              "memory", "vision_analyze", "react_to_message"}  # a chat reaction is never a side quest
+              "memory", "vision_analyze", "react_to_message",  # a chat reaction is never a side quest
+              "tool_search", "tool_describe"}  # Hermes Tool Search lookups: reading a tool's schema changes nothing
+BRIDGE_TOOL = "tool_call"  # Hermes Tool Search runs a deferred tool through tool_call(name=..., arguments=...)
+
+
+def bridged_calls(args) -> list[tuple[str, dict]]:
+    """The real tool calls inside a Tool Search tool_call: [(name, arguments)]. Names like
+    'mcp__server__screen_find' count as 'screen_find'."""
+    args = args if isinstance(args, dict) else {}
+    entries = args.get("calls") if isinstance(args.get("calls"), list) else [args]
+    out = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("name"):
+            continue
+        inner = entry.get("arguments")
+        if isinstance(inner, str):
+            try:
+                inner = json.loads(inner)
+            except ValueError:
+                inner = {}
+        out.append((str(entry["name"]).rsplit("__", 1)[-1], inner if isinstance(inner, dict) else {}))
+    return out
 # These always change files, whatever d1 thinks.
 WRITE_TOOLS = {"patch", "write_file"}
 # A question ("check", "what is this") should be answered in a handful of steps. Past this many tool calls in a
@@ -818,7 +839,9 @@ def register(ctx):
                    "options), click or type on its answer, then capture again and confirm with screen_check. Rails "
                    "holds any click or typing that d3 didn't decide on the latest screenshot. If a jev_computer_use "
                    "tool is installed you may also hand it the whole goal; if it returns abstained, blocked or error, "
-                   "drive computer_use yourself as above instead of retrying it the same way.")
+                   "drive computer_use yourself as above instead of retrying it the same way. If screen_find or "
+                   "screen_check is not in your tool list, run it through tool_call with that exact name. Click and type "
+                   "in the same app you captured (on Windows the desktop is app 'explorer.exe').")
         else:
             how = ("Computer Use Vision (d3-turbo) is OFF right now, so Rails can't check the screen for you. Do not "
                    "try another way: tell Willie in one line to turn on Computer Use Vision, and stop.")
@@ -910,7 +933,12 @@ def register(ctx):
 
     def on_transform_tool_result(tool_name="", args=None, result=None, session_id="", status="",
                                  error_message="", **_):
-        note = cua_tool_result(session_id or "-", tool_name, result, status, error_message, args)
+        if tool_name == BRIDGE_TOOL and bridged_calls(args):
+            notes = [cua_tool_result(session_id or "-", name, result, status, error_message, inner)
+                     for name, inner in bridged_calls(args)]
+            note = next((n for n in notes if n), None)
+        else:
+            note = cua_tool_result(session_id or "-", tool_name, result, status, error_message, args)
         if note is None:
             return None
         text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
@@ -980,6 +1008,12 @@ def register(ctx):
     def on_pre_tool_call(tool_name="", args=None, session_id="", turn_id="", **_):
         apply_settings(ctx)
         args = args if isinstance(args, dict) else {}
+        if tool_name == BRIDGE_TOOL and bridged_calls(args):  # judge the tools it really runs, not the wrapper
+            for name, inner in bridged_calls(args):
+                held = on_pre_tool_call(tool_name=name, args=inner, session_id=session_id, turn_id=turn_id)
+                if held:
+                    return held
+            return None
         if (tool_name == "computer_use" and args.get("action") not in SCREEN_LOOK_ACTIONS) or tool_name == JEV_VISION_TOOL:
             with _LOCK:  # the screen check at "done" needs to know the agent changed something on screen
                 wf = _WF.setdefault(session_id or "-", {"loaded": set()})
