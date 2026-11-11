@@ -1,3 +1,5 @@
+![Rails: keeps your Hermes Agent on track](assets/rails-banner.jpg)
+
 # Rails — a guardrails and decision plugin for Hermes Agent
 
 Rails keeps a Hermes agent on what you actually asked for and shows every decision it makes.
