@@ -1,6 +1,6 @@
 name: rails
-version: "0.3.0"
-description: "Keeps the agent on what the user asked and shows every decision. d1-3B (local Decision Guard) decides; Rails shows ⚖ ✅ ⛔ ❌ tags. Scope gate (watch-only) + workflow gate: code work loads the matching skill first, and 'done' after code edits needs a test run."
+version: "0.4.0"
+description: "Keeps the agent on what the user asked and shows every decision. d1-3B (local Decision Guard) decides; Rails shows ⚖ ✅ ⛔ ❌ tags. Scope gate (watch-only) + workflow gate: code work loads the matching skill first, and 'done' after code edits needs a test run. Computer use stays on vision unless you pick text_first (d1 chooses a numbered element, d3 aims when it cannot) or cloud (the model clicks on its own). Money and email actions always ask d1, and are held if d1 is down."
 author: "grimmjoww"
 requires_hermes: ">=0.22.0"
 provides_hooks:

@@ -9,6 +9,8 @@ It uses a fast local "System 1" model for quick yes/no and multiple-choice calls
 - **Scope gate** (`scope_mode`: `shadow` by default, or `block`): flags a tool call that is work you did not ask for, and flags a "rabbit hole" past `look_step_budget` steps on a look-only question. In `block` it stops the call; in `shadow` it only shows what it would have done.
 - **Workflow gate** (`workflow_mode`): for code work, the agent is steered to load the matching skill first (the [superpowers](https://github.com/obra/superpowers) plugin if it is installed, otherwise Hermes's bundled skills), and "done" after code edits needs a test run.
 - **Decide tool** (`decide`): the agent can ask the local decision models typed questions (yes/no, choice, score, and, when vision is on, box and track) and get a probability for every answer.
+- **Computer use** (`computer_use_driver`, default `vision`): `vision` keeps today's path, where d3-turbo aims clicks when it is up. `text_first` turns the screen into a numbered element list and asks d1 which element to click; d3 aims only when d1 cannot. `cloud` lets a strong model click on its own, and still offers `screen_find`, `decide`, and `screen_check` as optional advice.
+- **Money and email check** (`money_email_check`, default `on`): a purchase or an email send, reply, forward, delete, or archive always asks d1 whether the ask authorizes that specific step. `on` holds the step on no, unsure, or d1 down. `shadow` only tags. There is no `off`.
 - **End-of-turn check**: after the agent has acted on the screen, a vision model looks at the newest screenshot and the result is shown as a tag. (Hermes only runs its `pre_verify` gate after file edits, so a screen-only turn is checked at the end of the turn. That end-of-turn check is a tag and a log line; it cannot send the agent back.)
 
 Every decision is shown inline as a tag (⚖ ✅ ⛔ ❌) and written to a decision log.
@@ -17,25 +19,39 @@ Every decision is shown inline as a tag (⚖ ✅ ⛔ ❌) and written to a decis
 
 ```mermaid
 flowchart TD
-  A[Agent is about to take a step] --> B{Does this step need to look at the screen?}
-  B -->|No: text only| C[d1 Decision Guard<br/>quick text decisions]
-  B -->|Yes: screenshot, click point, or video| D[d3-turbo vision<br/>only when it must look]
-  C --> E{Scope, workflow, and rabbit-hole gates}
-  D --> E
-  E -->|Allow| F[The tool runs]
-  E -->|Block or hold| G[The step is stopped, or the agent is told to load the skill first]
-  F --> H{Did the agent act on the screen this turn?}
-  H -->|Yes| I[End-of-turn screen check with d3]
-  H -->|No file or screen proof needed| J[Turn ends]
-  I --> J
+  A[Agent is about to take a step] --> B{Computer-use click, and computer_use_mode is on?}
+  B -->|vision, d3 up, no find yet| Hold[Hold until screen_find or decide]
+  B -->|text_first| Pick[d1 picks from the element list]
+  Pick -->|Pick at 0.60 or above| Money{Money or email action?}
+  Pick -->|Unsure, empty, or canvas, and d3 is up| Aim[Hold and ask for screen_find]
+  Pick -->|d1 down, and d3 is up| Hold
+  Pick -->|d3 is down| Money
+  B -->|cloud| Money
+  B -->|Not that kind of click| Money
+  Hold --> Stop[Step stopped]
+  Aim --> Stop
+  Money -->|Yes| Auth[d1: does the ask authorize this step?]
+  Auth -->|Yes at 0.70 or above| Gates
+  Auth -->|No, unsure, or d1 down| Confirm[Hold. Confirm with the user]
+  Money -->|No| Gates{Scope, workflow, and rabbit hole on d1}
+  Gates -->|Allow, or a computer-use screen tool| Run[The tool runs]
+  Gates -->|Block or hold| Stop
+  Run --> EndQ{Screen action this turn?}
+  EndQ -->|Yes| Check[End-of-turn screen check with d3]
+  EndQ -->|No| Done[Turn ends]
+  Check --> Done
 ```
 
-**How routing actually works (v3):**
+A computer-use turn's screen tools (`computer_use`, `screen_find`, `screen_check`, `decide`) skip the scope judge. They do not skip the money and email check. The click hold above runs first, so a checkout click that vision is still holding for `screen_find` has not reached the money check yet.
 
-- **The gates always call d1.** The scope gate, workflow gate, rabbit-hole check, and turn classification all call d1 at `http://127.0.0.1:8089/v1/systemone`. You do not pick a model for those.
+**How routing actually works:**
+
+- **The gates always call d1.** The scope gate, workflow gate, rabbit-hole check, and turn classification all call d1 at `http://127.0.0.1:8089/v1/systemone`. You do not pick a model for those. The scope gate fails open if d1 cannot answer.
+- **Money and email is the one check that fails closed.** It also calls d1 at 8089, directly, with no d3-ultra fallback. A confident yes lets the step through. No, unsure, or a down server holds it.
 - **`decide` with `use="auto"` also starts at d1.** Text questions go to d1 first and only escalate to d3 when d1 is unsure (the same confidence bands the gates use). If the state itself already says the fact is missing, auto returns a mid / unknown answer and does not ask a model to guess.
-- **`use="fast"` stays on d1.** **`use="smart"` or `use="vision"` goes straight to d3.**
-- **Vision tools always use d3-turbo.** `screen_find`, `screen_check`, `video_check`, click-point advice, and the end-of-turn screen check talk to port 8899. They do not go through d1.
+- **`use="fast"` stays on d1.** **`use="smart"` or `use="vision"` goes straight to d3.** d3-ultra is used only when `second_opinion_mode` is on or in shadow.
+- **Vision tools always use d3-turbo.** `screen_find`, `screen_check`, `video_check`, and the end-of-turn screen check talk to port 8899.
+- **`computer_use_driver` chooses who aims a click.** `vision` (the default) asks d3 when it is up and holds a click d3 has not decided. `text_first` asks d1 to pick from the element list first. `cloud` does not hold clicks for a pick or a find. Keys, typing, scroll, and focus are not held for a click point in any driver.
 
 If a layer is off, Rails says so in plain words and never fakes an answer.
 
@@ -43,8 +59,13 @@ If a layer is off, Rails says so in plain words and never fakes an answer.
 
 - **Scope gate** (`scope_mode`): at `pre_tool_call`, d1 classifies the user's ask (look-only vs. change) and whether the tool call is on-task. Look-only turns flag changes; any turn can flag a side quest. Past `look_step_budget` tool calls on a look-only question, Rails calls it a rabbit hole (computer-use turns are not counted toward that budget). `shadow` only shows a tag; `block` stops the call.
 - **Workflow gate** (`workflow_mode`): d1 sorts the turn (bug / code change / new build / other). For code work, the matching skill should be loaded first; edits can be held until it is. After code edits, `pre_verify` refuses "done" until a test ran (or, if the check itself fails, it still will not rubber-stamp "done"). If the superpowers plugin is not installed, Rails falls back to Hermes's bundled skills and does not break.
-- **Screen check** (`screen_check_mode`): after clicking, typing, or other computer-use actions, d3-turbo looks at the newest screenshot. `on` can send the agent back through `pre_verify` (file-edit turns). Screen-only turns get the end-of-turn tag described above. `shadow` only shows what it would do. `off` skips the check. If Computer Use Vision is down, the result is `unavailable` and the agent is told to say that plainly.
-- **Computer-use gate** (`computer_use_mode`, default **`shadow`**): when the user asked for computer use, Rails can steer the agent to `computer_use` with d3 as its eyes, and can hold stand-in browsers. In `on`, clicks are meant to be backed by a d3 find/decide; that hold is skipped when the vision server is down, so the agent is not told to stop just because d3 is off. Keys, typing, scroll, and focus are not held for a click point. `jev_computer_use` is mentioned in block text only if that tool is actually registered.
+- **Screen check** (`screen_check_mode`): after clicking, typing, or other computer-use actions, d3-turbo looks at the newest screenshot. `on` can send the agent back through `pre_verify` (file-edit turns). Screen-only turns get the end-of-turn tag described above. `shadow` only shows what it would do. `off` skips the check. If Computer Use Vision is down, the result is `unavailable` and the agent is told to say that plainly. With `text_first` or `cloud`, that end-of-turn tag says `screen check unavailable`.
+- **Element list** (`element_list_max`, default **80**): a `computer_use` capture, an accessibility tree, or a Windows UI Automation tree can be turned into one numbered text list of clickable or typeable targets. Offscreen and disabled controls are left out. An empty list is the text `no text list`. `text_first` is what asks d1 to choose from it. `vision` does not.
+- **Text-first clicks** (`computer_use_driver=text_first`): d1 is asked which numbered element matches the next action. A pick at 0.60 or above backs a click on that element (its index, or a point inside its box), the same way a d3 find backs a click. An unsure pick, `none`, an empty list, or a screen that is only a canvas, game, or app chrome is aimed with `screen_find` on d3-turbo, and, when `computer_use_mode` is on, the click stays held while vision is up. If d3 is down, Rails says so and does not hold the click. If d1 is down, Rails does not switch to d3; the click path stays the vision one (held when vision is up). d3-ultra is not part of aiming unless Second Opinion is already on.
+- **Cloud driver** (`computer_use_driver=cloud`): for a strong model that can click on its own. The click hold is off, so a click does not need a d1 pick or a d3 find. `decide`, `screen_find`, and `screen_check` still work, and the turn steer may suggest them, but Rails never requires them. The end-of-turn screen check still follows `screen_check_mode`. The money and email check still applies. The turn is tagged once: `⚖ cloud driver: clicks unheld, money/email still checked`.
+- **Money and email check** (`money_email_check`, default **`on`**): anything that buys, checks out, places an order, pays, fills a card field, subscribes, transfers money, or donates, and any email send, reply, forward, delete, or archive, asks d1 whether the user's ask clearly authorizes that specific step. A yes at 0.70 or above allows it. No or unsure holds it and tells the agent to confirm with the user. If d1 is down or errors, the step is held and the tag says d1 is unavailable. This runs on every `computer_use_driver`, including `cloud`, and on computer-use turns that otherwise skip the scope judge. `shadow` asks d1 and tags the answer without holding. There is no `off`. Adding an item to a cart, opening a store homepage, reading mail, and `git checkout` are not treated as paying or sending.
+- **Upgrading from 0.3.0:** `money_email_check` turns on by itself. A purchase or an email action that used to run, including a click on a computer-use turn, is now held until d1 says the ask covers that step, and is held when d1 is down. Set `shadow` if you only want the tag. The other gates are unchanged, and `computer_use_driver` still defaults to `vision`.
+- **Computer-use gate** (`computer_use_mode`, default **`shadow`**): when the user asked for computer use, Rails can steer the agent to `computer_use` and can hold stand-in browsers. In `on`, with the `vision` driver, clicks are meant to be backed by a d3 find/decide; that hold is skipped when the vision server is down, so the agent is not told to stop just because d3 is off. `text_first` and `cloud` change who aims, as above. Keys, typing, scroll, and focus are not held for a click point. `jev_computer_use` is mentioned in block text only if that tool is actually registered.
 - **Prompt-injection watch**: tool results are checked in the background. A hit is one ⚠ line and a log entry. It never blocks.
 - **Hermes Tool Search**: lookups (`tool_search`, `tool_describe`) are not judged. When a deferred tool is run through `tool_call`, Rails judges the inner tool, not the wrapper.
 - **Tools** (toolset `decisions`): `decide`, `screen_find`, `screen_check`, `video_check`.
@@ -60,7 +81,7 @@ Optional `user_label` / `agent_label` settings default to "the user" / "the agen
 - Optional **d3-turbo** (Computer Use Vision) at `http://127.0.0.1:8899` for `screen_find`, `screen_check`, `video_check`, click points, and the screen check before "done".
 - Optional **d3-ultra** (Decision Second Opinion) at `http://127.0.0.1:8898`. Used when `second_opinion_mode` is on or in shadow and d1 is under 60% sure, and as a text backend for a `decide` escalation. On some GPUs, d3-ultra may not load beside d3-turbo at the same time, which is why this mode defaults to `off`.
 
-When a layer is off, Rails names it and never invents an answer. The scope gate fails open if d1 cannot answer (the call goes ahead and the tag says ❌). The plugin still loads if none of the servers are running.
+When a layer is off, Rails names it and never invents an answer. The scope gate fails open if d1 cannot answer (the call goes ahead and the tag says ❌). The money and email check does the opposite: d1 down holds the step. The plugin still loads if none of the servers are running.
 
 ## Set up the local models
 
@@ -165,7 +186,7 @@ curl http://127.0.0.1:8899/health
 curl -s http://127.0.0.1:8899/v1/systemone -H "content-type: application/json" -d "{\"model\":\"vllm-sr/d3-turbo-INT4\",\"state\":\"Write a Python function that reverses a string.\",\"questions\":{\"kind\":{\"type\":\"choice\",\"instructions\":\"What kind of work is this?\",\"criteria\":{\"code\":\"Writing or fixing code\",\"math\":\"Mathematics\",\"chat\":\"Anything else\"}}}}"
 ```
 
-If port 8089 or 8899 has no server, Rails will not crash Hermes. Gates that need d1 will fail open and say so; vision tools will return an error that names the server and port to start.
+If port 8089 or 8899 has no server, Rails will not crash Hermes. The scope gate fails open and says so. The money and email check fails closed and holds the step. Vision tools return an error that names the server and port to start. The plugin still loads if none of the servers are running.
 
 ### 5. Rails settings (Hermes Desktop → Settings → Plugins → Rails)
 
@@ -181,6 +202,9 @@ These are the config keys the plugin reads (from `config_schema` / `apply_settin
 | `look_step_budget` | `8` | tool-call budget on a look-only question |
 | `user_label` | `the user` | what model-facing text calls the user |
 | `agent_label` | `the agent` | what model-facing text calls the agent |
+| `element_list_max` | `80` | how many targets the numbered element list keeps |
+| `computer_use_driver` | `vision` | `vision`, `text_first`, or `cloud` |
+| `money_email_check` | `on` | `on` or `shadow`. There is no `off` |
 
 There is no setting for host, port, or model id. Put d1 on 8089 and d3-turbo on 8899.
 
@@ -227,7 +251,7 @@ hermes plugins validate /path/to/rails --install-deps
 
 Rails is for any turn, not only the browser. A look-only question such as "Does this README mention the MIT license? Do not edit any file" should be classified as look-only. A write or patch on that turn is off-task: in `shadow` you get a ⚖ tag, and in `block` the call is stopped. Code-change turns are a different path: the workflow gate wants the matching skill loaded first, and "done" after edits wants a real test run.
 
-Computer use and web browsing use the same gates, plus d3 on the screenshot (`screen_find` / `screen_check`) and the end-of-turn screen check.
+Computer use and web browsing use the same gates, plus the driver above: d3 on the screenshot in `vision`, a numbered list and a d1 pick in `text_first`, or an unheld click in `cloud`. The end-of-turn screen check still runs. A purchase or an email send on that turn still goes through the money and email check.
 
 ## Disclosures
 

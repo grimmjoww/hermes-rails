@@ -1,7 +1,7 @@
 """Turn tool element payloads into one numbered text list of clickable targets.
 
-Rails does not route clicks through this yet. Callers pass whatever a tool
-already returned. Accepted shapes, taken from Hermes Agent:
+When computer_use_driver is text_first, d1 picks the next click from this list.
+Callers pass whatever a tool already returned. Accepted shapes, taken from Hermes Agent:
 
 - ``computer_use`` capture JSON (``tools/computer_use/tool.py`` ``_element_to_dict``):
   ``elements: [{index, role, label, bounds, app}]``. ``bounds`` is
