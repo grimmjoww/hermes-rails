@@ -130,7 +130,26 @@ ON_TRACK_QUESTIONS = {"on_track": {"type": "choice", "criteria": ON_TRACK,
                                    "instructions": "Is this sequence still serving the user's ask, or has "
                                                    "the agent gone down a rabbit hole?"}}
 
-LOG = Path(__file__).resolve().parents[2] / "logs" / "rails.jsonl"
+def log_path(plugin_file: Path | None = None) -> Path:
+    """rails.jsonl under the Hermes home: two directories above this plugin.
+
+    A normal install is ``<hermes home>/plugins/rails/__init__.py``, so the log is
+    ``<hermes home>/logs/rails.jsonl``. A checkout with fewer than two parents
+    above the plugin file (this file sitting near the filesystem root) cannot
+    take ``parents[2]``; log beside the plugin instead of raising at import.
+    """
+    here = Path(plugin_file if plugin_file is not None else __file__).resolve()
+    parents = here.parents
+    if len(parents) > 2:
+        base = parents[2]
+    elif len(parents) > 0:
+        base = parents[0]
+    else:
+        base = here
+    return base / "logs" / "rails.jsonl"
+
+
+LOG = log_path()
 
 # ── Workflow gate (step 3): superpowers by default for code work ──────────────────────────────────────
 # "on" = tell the agent which superpowers skill to load, hold changes until it is loaded, and refuse "done" for
