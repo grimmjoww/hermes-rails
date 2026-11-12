@@ -78,6 +78,7 @@ WRITE_TOOLS = {"patch", "write_file"}
 # Kept as a Desktop setting. Periodic "still serving the ask?" checks start after min(4, this) look-only
 # steps. The old hard cap (steps > this) is no longer the rabbit-hole rule.
 LOOK_STEP_BUDGET = 8
+ELEMENT_LIST_MAX = 80  # numbered text list of clickable targets; offscreen and disabled are already left out
 # Terminal commands made only of these never change anything, whatever d1 thinks (d1 rated a plain `ls` 0.90).
 READ_ONLY_COMMANDS = {
     "ls", "dir", "cat", "type", "head", "tail", "less", "more", "grep", "egrep", "rg", "find", "wc", "echo", "printf",
@@ -129,7 +130,26 @@ ON_TRACK_QUESTIONS = {"on_track": {"type": "choice", "criteria": ON_TRACK,
                                    "instructions": "Is this sequence still serving the user's ask, or has "
                                                    "the agent gone down a rabbit hole?"}}
 
-LOG = Path(__file__).resolve().parents[2] / "logs" / "rails.jsonl"
+def log_path(plugin_file: Path | None = None) -> Path:
+    """rails.jsonl under the Hermes home: two directories above this plugin.
+
+    A normal install is ``<hermes home>/plugins/rails/__init__.py``, so the log is
+    ``<hermes home>/logs/rails.jsonl``. A checkout with fewer than two parents
+    above the plugin file (this file sitting near the filesystem root) cannot
+    take ``parents[2]``; log beside the plugin instead of raising at import.
+    """
+    here = Path(plugin_file if plugin_file is not None else __file__).resolve()
+    parents = here.parents
+    if len(parents) > 2:
+        base = parents[2]
+    elif len(parents) > 0:
+        base = parents[0]
+    else:
+        base = here
+    return base / "logs" / "rails.jsonl"
+
+
+LOG = log_path()
 
 # ── Workflow gate (step 3): superpowers by default for code work ──────────────────────────────────────
 # "on" = tell the agent which superpowers skill to load, hold changes until it is loaded, and refuse "done" for
@@ -1156,7 +1176,7 @@ _CUA: dict[str, dict] = {}     # session_id -> this turn's computer-use ask: {"o
 def apply_settings(ctx) -> None:
     """Read choices from Desktop → Settings → Plugins → Rails (plugins.entries.rails.settings) each turn,
     so a change there takes effect on the next message. A missing or invalid value keeps the setting above."""
-    global MODE, WORKFLOW_MODE, LOOK_STEP_BUDGET, SECOND_MODE, VISUAL_MODE, CUA_MODE, USER, AGENT
+    global MODE, WORKFLOW_MODE, LOOK_STEP_BUDGET, ELEMENT_LIST_MAX, SECOND_MODE, VISUAL_MODE, CUA_MODE, USER, AGENT
     get = getattr(ctx, "get_config", None)
     if not callable(get):
         return
@@ -1165,6 +1185,7 @@ def apply_settings(ctx) -> None:
         workflow = str(get("workflow_mode", default=WORKFLOW_MODE)).lower()
         scope = str(get("scope_mode", default=MODE)).lower()
         budget = int(get("look_step_budget", default=LOOK_STEP_BUDGET))
+        element_cap = int(get("element_list_max", default=ELEMENT_LIST_MAX))
         second = str(get("second_opinion_mode", default=SECOND_MODE)).lower()
         visual = str(get("screen_check_mode", default=VISUAL_MODE)).lower()
         user = str(get("user_label", default=USER) or USER).strip()
@@ -1178,6 +1199,7 @@ def apply_settings(ctx) -> None:
     WORKFLOW_MODE = workflow if workflow in ("on", "shadow", "off") else WORKFLOW_MODE
     MODE = scope if scope in ("shadow", "block") else MODE
     LOOK_STEP_BUDGET = budget if budget >= 1 else LOOK_STEP_BUDGET
+    ELEMENT_LIST_MAX = element_cap if element_cap >= 1 else ELEMENT_LIST_MAX
     if user:
         USER = user
     if agent:

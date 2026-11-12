@@ -61,3 +61,8 @@ config_schema:
     default: "the agent"
     label: "What to call the agent in model-facing text"
     description: "Shown to the model in harness notes and prompts. Leave as 'the agent' for a generic install, or set a name in this setting only."
+  element_list_max:
+    type: int
+    default: 80
+    label: "Element list length"
+    description: "How many clickable or typeable targets the text element list keeps. Offscreen and disabled controls are left out before this cap."
