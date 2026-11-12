@@ -928,7 +928,7 @@ def visual_check(ask: str, last_action_at: float) -> dict:
 
 
 CUA_MODE = "shadow"  # the user asks for computer use: "off" | "shadow" (tag + log) | "on" (steer, hold stand-ins, flag the end)
-CUA_DRIVER = "vision"  # "vision" = d3 decides clicks. "text_first" = d1 picks a numbered element when the screen has a list.
+CUA_DRIVER = "vision"  # "vision" = d3 decides clicks. "text_first" = d1 picks from the list. "cloud" = the model clicks on its own.
 MONEY_EMAIL_MODE = "on"  # "on" holds a money or email step unless d1 says the ask authorizes it. "shadow" tags only. No off.
 CUA_ASK = re.compile(r"(?i)\b(computer[\s_-]?use|cua|use (the|my) (mouse|keyboard|screen|desktop|pc|computer)"
                      r"|on my (screen|desktop|pc|computer))\b")
@@ -1606,7 +1606,7 @@ def apply_settings(ctx) -> None:
         _log({"kind": "settings_error", "error": repr(error)[:160]})
         return
     CUA_MODE = cua if cua in ("on", "shadow", "off") else CUA_MODE
-    CUA_DRIVER = driver if driver in ("vision", "text_first") else CUA_DRIVER
+    CUA_DRIVER = driver if driver in ("vision", "text_first", "cloud") else CUA_DRIVER
     MONEY_EMAIL_MODE = money_email if money_email in ("on", "shadow") else MONEY_EMAIL_MODE
     SECOND_MODE = second if second in ("on", "shadow", "off") else SECOND_MODE
     VISUAL_MODE = visual if visual in ("on", "shadow", "off") else VISUAL_MODE
@@ -1834,11 +1834,20 @@ def register(ctx):
             _CUA[session] = {"ok": 0, "failed": [], "held": []}
         eyes = _eyes_tools().eyes
         vision = eyes.ready(eyes.EYES)
-        _log({"session": session, "kind": "cua_ask", "mode": CUA_MODE, "vision": vision})
+        _log({"session": session, "kind": "cua_ask", "mode": CUA_MODE, "vision": vision, "driver": CUA_DRIVER})
+        if CUA_DRIVER == "cloud":
+            _post("⚖ cloud driver: clicks unheld, money/email still checked")
+            _log({"session": session, "kind": "cloud_driver"})
         if CUA_MODE != "on":
             return None
         jev = tool_is_registered(JEV_VISION_TOOL, ctx)
-        if vision:
+        if CUA_DRIVER == "cloud":
+            how = ("You may click and type on your own. screen_find (where is the thing you name), decide "
+                   "(which of the options), and screen_check are optional advice when you want a second look. "
+                   "Rails will not hold a click waiting for them. Money and email actions are still checked. "
+                   "If screen_find, decide, or screen_check is not in your tool list, run it through tool_call "
+                   "with that exact name.")
+        elif vision:
             how = ("d3-turbo (Computer Use Vision) decides; you act. Drive computer_use: capture the screen, ask d3 "
                    "about that screenshot first (screen_find: where is the thing you name, or decide: which of the "
                    "options), click on its answer, then capture again and confirm with screen_check. For several clicks on one "
@@ -1872,7 +1881,7 @@ def register(ctx):
                                "stopped. Do not try anything else. Reply to the user now: say exactly what failed "
                                "(the reasons in the results above) and what they can do about it."}
         vision = _eyes_tools().eyes.ready(_eyes_tools().eyes.EYES)
-        if turn is not None and tool == CUA_TOOL and args.get("action") not in SCREEN_LOOK_ACTIONS                 and args.get("action") not in NO_POINT_ACTIONS                 and CUA_MODE == "on" and not turn.get("d3_decided")                 and not _d1_pick_backs(turn.get("d1_pick"), args)                 and vision:  # skip the hold when d3 is down, or when d1's pick is this element; do not tell the agent to stop
+        if turn is not None and tool == CUA_TOOL and args.get("action") not in SCREEN_LOOK_ACTIONS                 and args.get("action") not in NO_POINT_ACTIONS                 and CUA_MODE == "on" and CUA_DRIVER != "cloud" and not turn.get("d3_decided")                 and not _d1_pick_backs(turn.get("d1_pick"), args)                 and vision:  # skip the hold when d3 is down, when the driver is cloud, or when d1's pick is this element
             turn["held"].append(f"computer_use {args.get('action')}")
             _log({"session": session, "kind": "cua_undecided_held", "call": _short(tool, args)[:120]})
             _post(f"⛔ computer use: held computer_use {args.get('action')} · d3 hasn't decided it on the latest screen")
@@ -1992,7 +2001,7 @@ def register(ctx):
         _log({"session": session_id, "kind": "screen_verify", "mode": VISUAL_MODE, "at": "turn_end", **verdict})
         if verdict["result"] == "done":
             wf_tag(wf, f"✅ screen check: looks finished (p {verdict['p_done']:.2f})")
-        elif CUA_DRIVER == "text_first" and verdict["result"] == "unavailable":
+        elif CUA_DRIVER in ("text_first", "cloud") and verdict["result"] == "unavailable":
             wf_tag(wf, "⚠ screen check unavailable: " + verdict["why"]
                    + " · don't trust a \"done\" from this turn")
         else:
