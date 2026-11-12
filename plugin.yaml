@@ -66,3 +66,9 @@ config_schema:
     default: 80
     label: "Element list length"
     description: "How many clickable or typeable targets the text element list keeps. Offscreen and disabled controls are left out before this cap."
+  computer_use_driver:
+    type: str
+    choices: [vision, text_first]
+    default: vision
+    label: "How a click target is chosen"
+    description: "vision: Computer Use Vision decides clicks. text_first: when the current screen has a numbered element list, Decision Guard picks which element matches the next action. A pick at 0.60 or above backs a click on that element (its index, or a point inside its box). An empty list, an unsure pick, or Decision Guard being down is logged and the click path stays as it is."
