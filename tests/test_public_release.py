@@ -76,7 +76,7 @@ def test_computer_use_mode_defaults_to_shadow(tmp_path):
     yaml_text = (ROOT / "plugin.yaml").read_text(encoding="utf-8")
     block = yaml_text.split("computer_use_mode:", 1)[1].split("second_opinion_mode:", 1)[0]
     assert 'default: shadow' in block or 'default: "shadow"' in block
-    assert "0.3.0" in yaml_text.split("version", 1)[1][:40]
+    assert "0.4.0" in yaml_text.split("version", 1)[1][:40]
 
 
 def test_click_hold_is_skipped_when_d3_is_down(tmp_path, monkeypatch):
