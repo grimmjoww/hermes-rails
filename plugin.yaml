@@ -72,3 +72,9 @@ config_schema:
     default: vision
     label: "How a click target is chosen"
     description: "vision: Computer Use Vision decides clicks. text_first: when the current screen has a numbered element list, Decision Guard picks which element matches the next action. A pick at 0.60 or above backs a click on that element (its index, or a point inside its box). An unsure pick, an empty list, or a canvas, game, or app with nothing clickable is aimed with screen_find on d3-turbo. If Computer Use Vision is down, that click is not held. Decision Guard being down leaves the click path as it is. d3-ultra is used only when Second Opinion is on."
+  money_email_check:
+    type: str
+    choices: [on, shadow]
+    default: on
+    label: "Money and email check"
+    description: "A buy, checkout, payment, subscribe, transfer, donation, or an email send, reply, forward, delete, or archive always asks Decision Guard whether the user's ask authorizes that specific step. on holds the step unless the answer is a confident yes, and holds it when Decision Guard is down. shadow tags the same answer and lets the step through. This applies however a click target is chosen."
