@@ -68,10 +68,10 @@ config_schema:
     description: "How many clickable or typeable targets the text element list keeps. Offscreen and disabled controls are left out before this cap."
   computer_use_driver:
     type: str
-    choices: [vision, text_first]
+    choices: [vision, text_first, cloud]
     default: vision
     label: "How a click target is chosen"
-    description: "vision: Computer Use Vision decides clicks. text_first: when the current screen has a numbered element list, Decision Guard picks which element matches the next action. A pick at 0.60 or above backs a click on that element (its index, or a point inside its box). An unsure pick, an empty list, or a canvas, game, or app with nothing clickable is aimed with screen_find on d3-turbo. If Computer Use Vision is down, that click is not held. Decision Guard being down leaves the click path as it is. d3-ultra is used only when Second Opinion is on."
+    description: "vision: Computer Use Vision decides clicks. text_first: when the current screen has a numbered element list, Decision Guard picks which element matches the next action. A pick at 0.60 or above backs a click on that element (its index, or a point inside its box). An unsure pick, an empty list, or a canvas, game, or app with nothing clickable is aimed with screen_find on d3-turbo. If Computer Use Vision is down, that click is not held. Decision Guard being down leaves the click path as it is. d3-ultra is used only when Second Opinion is on. cloud: a strong model clicks on its own. Clicks are not held for a pick or a screen_find. screen_find, decide, and screen_check stay available as optional advice and are never required. The end-of-turn screen check still follows its own setting and says unavailable when Computer Use Vision is down. Money and email actions are still checked."
   money_email_check:
     type: str
     choices: [on, shadow]
