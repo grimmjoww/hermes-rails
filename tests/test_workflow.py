@@ -31,12 +31,26 @@ def verify(ctx, paths, session="s", attempt=0):
     return ctx.hooks["pre_verify"](session_id=session, attempt=attempt, changed_paths=paths)
 
 
+
+def has_notice(ctx, *parts, prefix=None, suffix=None):
+    """True if some notice matches. Scope and workflow post separately, so the
+    workflow line may not be shown[-1] once the sticky Rails status exists."""
+    for text in ctx.shown:
+        if prefix is not None and not text.startswith(prefix):
+            continue
+        if suffix is not None and not text.endswith(suffix):
+            continue
+        if all(p in text for p in parts):
+            return True
+    return False
+
+
 def test_bug_turn_names_the_debugging_skill(rails_ctx):
     rails, ctx = rails_ctx
     result = turn(rails, ctx)
     assert 'skill_view("superpowers:systematic-debugging")' in result["context"]
-    assert "not a message from Willie" in result["context"]
-    assert ctx.shown[-1] == "⚖ workflow: bug fix (0.90) → load superpowers:systematic-debugging before changing anything"
+    assert "not a message from the user" in result["context"]
+    assert has_notice(ctx, "⚖ workflow: bug fix (0.90) → load superpowers:systematic-debugging before changing anything")
 
 
 @pytest.mark.parametrize("kind,skill", [("feature", "test-driven-development"), ("plan", "brainstorming")])
@@ -63,9 +77,9 @@ def test_changes_are_held_until_the_skill_is_loaded(rails_ctx):
     assert tool(ctx, "terminal", {"command": "pytest tests/test_login.py"}) is None  # running tests is fine
     held = tool(ctx, "patch", {"path": "app/auth.py"})
     assert held["action"] == "block" and "superpowers:systematic-debugging" in held["message"]
-    assert ctx.shown[-1].startswith("⛔ workflow: held patch")
+    assert has_notice(ctx, prefix="⛔ workflow: held patch")
     assert tool(ctx, "skill_view", {"name": "superpowers:systematic-debugging"}) is None
-    assert ctx.shown[-1] == "✅ workflow: bug fix → superpowers:systematic-debugging loaded"
+    assert has_notice(ctx, "✅ workflow: bug fix → superpowers:systematic-debugging loaded")
     assert tool(ctx, "patch", {"path": "app/auth.py"}) is None
 
 
@@ -81,7 +95,7 @@ def test_skill_loaded_earlier_in_the_chat_is_not_required_again(rails_ctx):
     turn(rails, ctx)
     tool(ctx, "skill_view", {"name": "superpowers:systematic-debugging"})
     assert turn(rails, ctx, turn_id="t2") is None
-    assert ctx.shown[-1] == "✅ workflow: bug fix → superpowers:systematic-debugging (loaded earlier this chat)"
+    assert has_notice(ctx, "✅ workflow: bug fix → superpowers:systematic-debugging (loaded earlier this chat)")
     assert tool(ctx, "patch", {"path": "app/auth.py"}) is None
 
 
@@ -92,7 +106,7 @@ def test_d1_down_fails_open_and_loud(rails_ctx):
         raise ConnectionRefusedError("no d1")
     rails.ask_d1 = down
     assert ctx.hooks["pre_llm_call"](session_id="s", turn_id="t1", user_message="fix the login test") is None
-    assert ctx.shown[-1].startswith("❌ workflow check down")
+    assert has_notice(ctx, prefix="❌ workflow check down")
 
 
 def test_done_needs_a_test_after_code_changes(rails_ctx):
@@ -100,10 +114,10 @@ def test_done_needs_a_test_after_code_changes(rails_ctx):
     turn(rails, ctx)
     result = verify(ctx, ["G:/app/auth.py"])
     assert result["action"] == "continue" and "no test ran" in result["message"]
-    assert ctx.shown[-1].startswith("⛔ can't finish yet: code changed (auth.py)")
+    assert has_notice(ctx, prefix="⛔ can't finish yet: code changed (auth.py)")
     tool(ctx, "terminal", {"command": "python -m pytest -q tests/test_login.py"})
     assert verify(ctx, ["G:/app/auth.py"], attempt=1) is None
-    assert ctx.shown[-1].startswith("✅ proof: test ran (terminal `python -m pytest -q tests/test_login.py`)")
+    assert has_notice(ctx, prefix="✅ proof: test ran (terminal `python -m pytest -q tests/test_login.py`)")
 
 
 @pytest.mark.parametrize("command", [
@@ -154,7 +168,7 @@ def test_shadow_mode_only_shows(rails_ctx):
     rails, ctx = rails_ctx
     rails.WORKFLOW_MODE = "shadow"
     assert turn(rails, ctx) is None
-    assert "would require superpowers:systematic-debugging" in ctx.shown[-1]
+    assert has_notice(ctx, "would require superpowers:systematic-debugging")
     assert tool(ctx, "patch", {"path": "app/auth.py"}) is None
     assert verify(ctx, ["G:/app/auth.py"]) is None
 
@@ -170,7 +184,7 @@ def test_without_superpowers_falls_back_to_hermes_bundled_skills(rails_ctx, tmp_
     rails.SUPERPOWERS_DIR = tmp_path / "missing"
     assert 'skill_view("systematic-debugging")' in turn(rails, ctx)["context"]
     assert turn(rails, ctx, kind="plan", turn_id="t2") is None  # no bundled brainstorming
-    assert "no skill installed" in ctx.shown[-1]
+    assert has_notice(ctx, "no skill installed")
 
 
 def test_decisions_are_logged(rails_ctx):
@@ -188,7 +202,7 @@ def test_routing_line_joins_the_workflow_toast(rails_ctx):
     rails, ctx = rails_ctx
     turn(rails, ctx)
     assert rails.note_skill("s", "t1", "🧭 Skill loaded: ue4ss-lua-modding") is True
-    assert ctx.shown[-1].endswith("before changing anything · 🧭 Skill loaded: ue4ss-lua-modding")
+    assert has_notice(ctx, suffix="before changing anything · 🧭 Skill loaded: ue4ss-lua-modding")
     assert ctx.posts == 1
 
 
@@ -196,7 +210,7 @@ def test_routing_line_that_arrives_first_shows_at_turn_start(rails_ctx):
     rails, ctx = rails_ctx
     rails.note_skill("s", "t1", "🧭 No skill needed (0.2 s)")
     turn(rails, ctx, kind="other", message="how was your day babe")
-    assert ctx.shown[-1] == "🧭 No skill needed (0.2 s)"
+    assert has_notice(ctx, "🧭 No skill needed (0.2 s)")
     assert ctx.posts == 1
 
 

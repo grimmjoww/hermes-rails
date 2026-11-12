@@ -1,7 +1,7 @@
 """The d3 tools Rails gives the agent: decide, screen_find, screen_check, video_check (see eyes.py for the layers).
 
 Every call is one line in Rails' log (kind "d3_tool"); a layer that is off is reported in plain words naming the
-Desktop shortcut that turns it on. Tool results are JSON text.
+server to start (d1 on 8089, d3-turbo on 8899, d3-ultra on 8898). Tool results are JSON text.
 """
 from __future__ import annotations
 
@@ -69,7 +69,14 @@ def make_handlers(log: Callable[[dict], None]) -> dict[str, Callable[..., str]]:
     def run(tool: str, fn: Callable[[], dict]) -> str:
         try:
             out = fn()
-            log({"kind": "d3_tool", "tool": tool, "by": out.get("answered_by"), "ms": out.get("ms")})
+            entry = {"kind": "d3_tool", "tool": tool, "by": out.get("answered_by"), "ms": out.get("ms")}
+            routing = out.get("routing") or {}
+            for key in ("use", "d1_ms", "d3_ms", "escalated", "skipped"):
+                if key in routing:
+                    entry[key] = routing[key]
+            if routing.get("by"):
+                entry["by_question"] = routing["by"]
+            log(entry)
             return _result(out)
         except eyes.D3Error as error:
             log({"kind": "d3_tool", "tool": tool, "error": str(error)[:200]})
@@ -115,7 +122,7 @@ def make_handlers(log: Callable[[dict], None]) -> dict[str, Callable[..., str]]:
         for i, target in enumerate(targets):
             spot = eyes.box_in_pixels(out["answers"][f"where{i}"], *size)
             visible = round(float(out["answers"][f"there{i}"].get("noul", 0.0)), 3)
-            found = visible >= eyes.FOUND_AT and spot["confidence"] >= eyes.BOX_AT
+            found = eyes.target_found(visible, spot["confidence"], spot["box_px"], *size)
             found_all = found_all and found
             results.append({"target": target, "found": found, "visible_p": visible,
                             **({"click_at": spot["click_at"], "box_px": spot["box_px"]} if found else {}),
@@ -144,7 +151,14 @@ def make_handlers(log: Callable[[dict], None]) -> dict[str, Callable[..., str]]:
             size = eyes.image_size(image)
             spot = eyes.box_in_pixels(where, *size)
             visible = round(float(there.get("noul", 0.0)), 3)
-            found = visible >= eyes.FOUND_AT and spot["confidence"] >= eyes.BOX_AT
+            # High visibility + a degenerate box: one retry, in case the first box was empty.
+            if (visible >= eyes.VISIBLE_TRUST_AT and not eyes.box_is_usable(spot["box_px"], *size)):
+                retry = eyes.decide(body, "vision")
+                out["ms"] = out.get("ms", 0) + retry.get("ms", 0)
+                where, there = retry["answers"]["where"], retry["answers"]["there"]
+                spot = eyes.box_in_pixels(where, *size)
+                visible = round(float(there.get("noul", 0.0)), 3)
+            found = eyes.target_found(visible, spot["confidence"], spot["box_px"], *size)
             if not found:
                 advice = "Not found: do not click. Scroll, open the right view, capture again, or describe it differently."
             elif spot["confidence"] < eyes.SURE_BOX_AT:
@@ -188,11 +202,13 @@ SCHEMAS = {
     "decide": {
         "name": "decide",
         "description": (
-            "Ask Willie's local decision models typed questions and get a probability for every answer (no text "
+            "Ask the local decision models typed questions and get a probability for every answer (no text "
             "generation; free and private). Types: " + _QTYPES + ". Use it to judge, sort, rank, check or choose: "
             "is this a scam, which job fits best (score), which file/option/screenshot matches, is this draft good "
-            "enough, does this log show the error. Put ALL questions about one input in one call. Text goes to "
-            "d3-ultra (smart); pictures, videos, box and track go to d3-turbo (eyes)."),
+            "enough, does this log show the error. Put ALL questions about one input in one call. Text is asked "
+            "of d1 first (fast, ~0.2 s) and only escalated to d3 if d1 is unsure. For a hard judgment call, pass "
+            "use='smart' to send the question straight to d3. Pictures, videos, box and track go straight to "
+            "d3-turbo (eyes). The result names which model answered each question and how many ms it took."),
         "parameters": {"type": "object", "properties": {
             "state": {"description": "The input to judge: text, or a JSON object/array. Keep it to what matters."},
             "questions": _q("{name: {type, instructions, criteria?}}. choice: criteria {option: short description}; "
@@ -208,7 +224,9 @@ SCHEMAS = {
                                       "(e.g. 20 job posts, each scored)."},
             "long_context": {"type": "boolean", "description": "Allow very long input (slower)."},
             "use": {"type": "string", "enum": ["auto", "smart", "vision", "fast"],
-                    "description": "auto (default) picks the right model; fast = d1, quick but weaker."},
+                    "description": "auto (default): text goes to d1 first and escalates to d3 only if d1 is "
+                                   "unsure; pictures go to d3. smart = send text straight to d3 (use this for "
+                                   "a hard judgment call). vision = d3-turbo (eyes). fast = d1 only."},
         }, "required": ["state", "questions"]},
     },
     "screen_find": {

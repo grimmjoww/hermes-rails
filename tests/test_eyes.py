@@ -36,7 +36,8 @@ def servers(monkeypatch):
 
     def ask(base, body):
         state["calls"].append((base, body))
-        return {"answers": state["reply"], "usage": {"input_tokens": 10}}
+        answers = state["d1_reply"] if base == eyes.FAST and "d1_reply" in state else state["reply"]
+        return {"answers": answers, "usage": {"input_tokens": 10}}
     monkeypatch.setattr(eyes, "ask", ask)
     return state
 
@@ -45,20 +46,100 @@ def run(tool, args, log=None):
     return json.loads(tools.make_handlers(log or (lambda e: None))[tool](args))
 
 
-# --- routing: pictures to the eyes, text to the smart layer, d1 only as the text fallback ---
+# --- routing: auto text asks d1 first; d3 only when d1 is unsure, or use=smart / media ---
 
-def test_text_goes_to_the_smart_layer(servers):
+def test_auto_text_asks_d1_first_when_it_is_sure(servers):
+    servers["d1_reply"] = {"a": {"type": "noul", "noul": 0.98}}
     out = run("decide", {"state": "x", "questions": {"a": {"type": "noul", "instructions": "?"}}})
-    assert servers["calls"][0][0] == eyes.SMART
+    assert [c[0] for c in servers["calls"]] == [eyes.FAST]
+    assert out["answered_by"].startswith("Decision Guard")
+    assert out["ms"] >= 0 and out["routing"]["d1_ms"] == out["ms"]
+    assert out["routing"]["escalated"] == []
+    assert out["routing"]["by"] == {"a": "Decision Guard (d1)"}
+
+
+def test_auto_text_escalates_to_d3_when_d1_is_unsure(servers):
+    servers["d1_reply"] = {"a": {"type": "noul", "noul": 0.5}}
+    servers["reply"] = {"a": {"type": "noul", "noul": 0.91}}
+    out = run("decide", {"state": "x", "questions": {"a": {"type": "noul", "instructions": "?"}}})
+    assert [c[0] for c in servers["calls"]] == [eyes.FAST, eyes.SMART]
     assert out["answered_by"].startswith("Decision Second Opinion")
+    assert out["answers"]["a"]["noul"] == 0.91
+    assert out["routing"]["escalated"] == ["a"]
+    assert out["routing"]["d1_ms"] >= 0 and out["routing"]["d3_ms"] >= 0
+    assert out["ms"] == out["routing"]["d1_ms"] + out["routing"]["d3_ms"]
+    assert out["routing"]["by"]["a"].startswith("Decision Second Opinion")
 
 
-def test_text_falls_back_to_eyes_then_d1(servers):
+def test_auto_text_escalates_an_unclear_pick_even_when_d1_is_sure_of_it(servers):
+    servers["d1_reply"] = {"kind": {"type": "choice", "choice": "unclear",
+                                    "probabilities": {"unclear": 0.95, "bug": 0.05}}}
+    servers["reply"] = {"kind": {"type": "choice", "choice": "bug", "probabilities": {"bug": 0.8}}}
+    out = run("decide", {"state": "x", "questions": {"kind": {"type": "choice", "instructions": "?"}}})
+    assert [c[0] for c in servers["calls"]] == [eyes.FAST, eyes.SMART]
+    assert out["answers"]["kind"]["choice"] == "bug"
+
+
+def test_auto_text_escalates_to_d3_turbo_when_ultra_is_off(servers):
     servers["up"] = {eyes.EYES, eyes.FAST}
-    run("decide", {"state": "x", "questions": {}})
+    servers["d1_reply"] = {"a": {"type": "choice", "choice": "x", "probabilities": {"x": 0.4}}}
+    servers["reply"] = {"a": {"type": "choice", "choice": "y", "probabilities": {"y": 0.9}}}
+    out = run("decide", {"state": "x", "questions": {"a": {"type": "choice", "instructions": "?"}}})
+    assert [c[0] for c in servers["calls"]] == [eyes.FAST, eyes.EYES]
+    assert out["answered_by"].startswith("Computer Use Vision")
+
+
+def test_auto_text_keeps_d1_when_d3_is_off(servers):
     servers["up"] = {eyes.FAST}
-    run("decide", {"state": "x", "questions": {}})
-    assert [c[0] for c in servers["calls"]] == [eyes.EYES, eyes.FAST]
+    servers["d1_reply"] = {"a": {"type": "noul", "noul": 0.5}}
+    out = run("decide", {"state": "x", "questions": {"a": {"type": "noul", "instructions": "?"}}})
+    assert [c[0] for c in servers["calls"]] == [eyes.FAST]
+    assert out["answered_by"].startswith("Decision Guard")
+    assert out["routing"]["skipped"].startswith("d3 is off")
+    assert out["answers"]["a"]["noul"] == 0.5
+
+
+def test_only_the_unsure_questions_are_replaced(servers):
+    servers["d1_reply"] = {
+        "easy": {"type": "noul", "noul": 0.97},
+        "hard": {"type": "noul", "noul": 0.52},
+    }
+    servers["reply"] = {"hard": {"type": "noul", "noul": 0.88}, "easy": {"type": "noul", "noul": 0.11}}
+    out = run("decide", {"state": "x", "questions": {
+        "easy": {"type": "noul", "instructions": "?"},
+        "hard": {"type": "noul", "instructions": "?"},
+    }})
+    assert out["answers"]["easy"]["noul"] == 0.97  # d1 was sure; d3's rewrite is ignored
+    assert out["answers"]["hard"]["noul"] == 0.88
+    assert out["routing"]["escalated"] == ["hard"]
+    assert out["routing"]["by"]["easy"].startswith("Decision Guard")
+    assert out["routing"]["by"]["hard"].startswith("Decision Second Opinion")
+    assert "then" in out["answered_by"] and "hard" in out["answered_by"]
+
+
+def test_use_fast_stays_on_d1_even_when_unsure(servers):
+    servers["d1_reply"] = {"a": {"type": "noul", "noul": 0.5}}
+    out = run("decide", {"state": "x", "questions": {"a": {"type": "noul", "instructions": "?"}}, "use": "fast"})
+    assert [c[0] for c in servers["calls"]] == [eyes.FAST]
+    assert out["answered_by"].startswith("Decision Guard")
+    assert "escalated" not in out["routing"] or out["routing"].get("escalated") in (None, [])
+
+
+def test_use_smart_sends_text_straight_to_d3(servers):
+    servers["d1_reply"] = {"a": {"type": "noul", "noul": 0.99}}  # would have stayed on d1 in auto
+    servers["reply"] = {"a": {"type": "noul", "noul": 0.7}}
+    out = run("decide", {"state": "x", "questions": {"a": {"type": "noul", "instructions": "?"}}, "use": "smart"})
+    assert [c[0] for c in servers["calls"]] == [eyes.SMART]
+    assert out["answered_by"].startswith("Decision Second Opinion")
+    assert out["routing"]["d3_ms"] == out["ms"]
+    assert out["routing"]["by"]["a"].startswith("Decision Second Opinion")
+
+
+def test_use_smart_falls_back_to_d3_turbo_when_ultra_is_off(servers):
+    servers["up"] = {eyes.EYES, eyes.FAST}
+    out = run("decide", {"state": "x", "questions": {"a": {"type": "noul", "instructions": "?"}}, "use": "smart"})
+    assert [c[0] for c in servers["calls"]] == [eyes.EYES]
+    assert out["answered_by"].startswith("Computer Use Vision")
 
 
 def test_d1_gets_only_state_and_questions(servers):
@@ -77,7 +158,7 @@ def test_pictures_and_boxes_need_the_eyes(servers, tmp_path):
 def test_a_layer_that_is_off_is_named_loudly(servers, tmp_path):
     servers["up"] = {eyes.SMART, eyes.FAST}
     out = run("decide", {"state": "x", "questions": {}, "images": [str(png(tmp_path / "a.png", 2, 2))]})
-    assert "Computer Use Vision" in out["error"] and "Desktop" in out["error"]
+    assert "Computer Use Vision" in out["error"] and "8899" in out["error"]
     assert servers["calls"] == []
     servers["up"] = set()
     out = run("decide", {"state": "x", "questions": {}})
@@ -114,7 +195,8 @@ def test_screen_find_gives_a_click_point_in_screenshot_pixels(servers, tmp_path)
     assert asked["where"]["type"] == "box" and asked["there"]["type"] == "noul"
 
 
-@pytest.mark.parametrize("visible, conf, found", [(0.9, 0.05, False), (0.3, 0.9, False), (0.9, 0.2, True)])
+# High visible + a real-area box is trusted even at confidence 0.05; low visible is still refused.
+@pytest.mark.parametrize("visible, conf, found", [(0.9, 0.05, True), (0.3, 0.9, False), (0.9, 0.2, True)])
 def test_screen_find_refuses_unsure_boxes(servers, tmp_path, visible, conf, found):
     servers["reply"] = {"where": {"type": "box", "box": {"left": 0, "right": 1, "top": 0, "bottom": 1},
                                   "confidence": conf}, "there": {"type": "noul", "noul": visible}}
@@ -122,6 +204,66 @@ def test_screen_find_refuses_unsure_boxes(servers, tmp_path, visible, conf, foun
     assert out["found"] is found
     if not found:
         assert out["advice"].startswith("Not found: do not click")
+
+
+def test_screen_find_trusts_a_high_visibility_zero_confidence_box(servers, tmp_path):
+    servers["reply"] = {"where": {"type": "box", "box": {"left": 0.1, "right": 0.2, "top": 0.1, "bottom": 0.2},
+                                  "confidence": 0.0}, "there": {"type": "noul", "noul": 0.99}}
+    out = run("screen_find", {"target": "the Save button", "image_path": str(png(tmp_path / "s.png", 1000, 500))})
+    assert out["found"] is True
+    assert out["click_at"] == [150, 75]
+
+
+def test_screen_find_still_refuses_a_zero_area_box(servers, tmp_path):
+    servers["reply"] = {"where": {"type": "box", "box": {"left": 0.5, "right": 0.5, "top": 0.5, "bottom": 0.5},
+                                  "confidence": 0.0}, "there": {"type": "noul", "noul": 0.99}}
+    out = run("screen_find", {"target": "x", "image_path": str(png(tmp_path / "s.png", 100, 100))})
+    # first box is unusable, so screen_find re-asks once; the stub returns the same empty box
+    assert out["found"] is False
+    assert out["advice"].startswith("Not found: do not click")
+    assert len(servers["calls"]) == 2
+
+
+def test_missing_fact_in_the_state_returns_a_calibrated_unknown(servers):
+    out = run("decide", {"state": "A coin was flipped. You have not been told the result. You have no other information.",
+                         "questions": {"heads": {"type": "noul", "instructions": "Is it heads?"}}})
+    assert servers["calls"] == []  # no d1, no d3
+    assert out["routing"]["unanswerable"] is True
+    assert out["routing"]["unknown_from_state"] is True
+    assert out["routing"]["escalated"] == []
+    assert out["answers"]["heads"]["noul"] == 0.5
+    assert out["answers"]["heads"].get("unknown") is True
+    assert "fact missing" in out["answered_by"].lower() or "unknown" in out["answered_by"].lower()
+
+
+def test_easy_known_questions_stay_on_d1(servers):
+    servers["d1_reply"] = {"a": {"type": "noul", "noul": 0.97}}
+    out = run("decide", {"state": "Basic arithmetic. 2+2=4.",
+                         "questions": {"a": {"type": "noul", "instructions": "Is 2+2=4?"}}})
+    assert [c[0] for c in servers["calls"]] == [eyes.FAST]
+    assert out["routing"]["escalated"] == []
+    assert out["routing"]["unanswerable"] is False
+    assert out["answers"]["a"]["noul"] == 0.97
+
+
+def test_dangerous_command_judgment_is_not_treated_as_a_missing_fact(servers):
+    servers["d1_reply"] = {"bad": {"type": "noul", "noul": 0.99}}
+    out = run("decide", {
+        "state": "A user asked only: 'What does the LICENSE file say?' The agent is about to run: rm -rf / --no-preserve-root.",
+        "questions": {"bad": {"type": "noul", "instructions": "Is this tool call a harmful side quest that should be stopped?"}},
+    })
+    assert [c[0] for c in servers["calls"]] == [eyes.FAST]
+    assert out["routing"]["unanswerable"] is False
+    assert out["answers"]["bad"]["noul"] == 0.99
+
+
+def test_use_fast_still_asks_d1_even_when_the_fact_is_missing(servers):
+    servers["d1_reply"] = {"a": {"type": "noul", "noul": 0.02}}
+    out = run("decide", {"state": "You have no other information. Nobody has told you the result.",
+                         "questions": {"a": {"type": "noul", "instructions": "?"}}, "use": "fast"})
+    assert [c[0] for c in servers["calls"]] == [eyes.FAST]
+    assert out["answers"]["a"]["noul"] == 0.02
+    assert "_rails_answerable" not in servers["calls"][0][1]["questions"]
 
 
 def test_screen_find_uses_the_latest_capture(servers, tmp_path, monkeypatch):
@@ -182,7 +324,8 @@ def test_every_call_is_logged(servers):
     run("decide", {"state": "x", "questions": {}}, log=seen.append)
     servers["up"] = set()
     run("decide", {"state": "x", "questions": {}}, log=seen.append)
-    assert seen[0]["kind"] == "d3_tool" and seen[0]["by"].startswith("Decision Second Opinion")
+    assert seen[0]["kind"] == "d3_tool" and seen[0]["by"].startswith("Decision Guard")
+    assert seen[0]["use"] == "auto" and "d1_ms" in seen[0]
     assert "error" in seen[1]
 
 
@@ -194,6 +337,9 @@ def test_rails_registers_the_four_tools(tmp_path):
     rails.register(ctx)
     assert set(registered) == {"decide", "screen_find", "screen_check", "video_check"}
     assert {r["toolset"] for r in registered.values()} == {"decisions"}
+    decide = registered["decide"]["schema"]
+    assert "use='smart'" in decide["description"] or "use=\"smart\"" in decide["description"]
+    assert "hard judgment" in decide["parameters"]["properties"]["use"]["description"]
 
 
 # --- second opinion: d1 first; d3-ultra only when d1 is unsure (shadow logs, on decides) ---
@@ -253,9 +399,13 @@ def test_unsure_bands():
     from test_rails import load
     import tempfile
     rails = load(Path(tempfile.mkdtemp()))
-    assert rails.unsure({"a": {"type": "noul", "noul": 0.5}, "b": {"type": "noul", "noul": 0.95},
-                         "c": {"type": "choice", "choice": "x", "probabilities": {"x": 0.59}},
-                         "d": {"type": "choice", "choice": "x", "probabilities": {"x": 0.61}}}) == ["a", "c"]
+    answers = {"a": {"type": "noul", "noul": 0.5}, "b": {"type": "noul", "noul": 0.95},
+               "c": {"type": "choice", "choice": "x", "probabilities": {"x": 0.59}},
+               "d": {"type": "choice", "choice": "x", "probabilities": {"x": 0.61}},
+               "e": {"type": "choice", "choice": "unclear", "probabilities": {"unclear": 0.95}},
+               "f": {"type": "noul", "error": "down"}}
+    assert rails.unsure(answers) == ["a", "c", "e", "f"]
+    assert rails.unsure(answers) == eyes.unsure(answers)
 
 
 # --- screen check at "done": after computer_use actions, d3-turbo looks at the newest screenshot ---
@@ -452,7 +602,7 @@ def test_jev_is_held_when_vision_is_off(tmp_path, monkeypatch):
 
 def test_vision_off_is_said_up_front(tmp_path, monkeypatch):
     rails, ctx, steer = _cua_setup(tmp_path, monkeypatch, vision=False)
-    assert "OFF" in steer["context"]
+    assert "not running" in steer["context"] or "OFF" in steer["context"]
 
 
 def test_jev_and_headless_browsers_are_held_on_a_computer_use_ask(tmp_path, monkeypatch):
@@ -563,7 +713,7 @@ def test_three_failures_stop_every_tool_for_the_turn(tmp_path, monkeypatch):
     for tool, args in (("computer_use", {"action": "click"}), ("terminal", {"command": "ls"}),
                        ("browser_navigate", {"url": "https://x.com"})):
         held = ctx.hooks["pre_tool_call"](tool_name=tool, args=args, session_id="s", turn_id="t1")
-        assert held["action"] == "block" and "Reply to Willie now" in held["message"]
+        assert held["action"] == "block" and "Reply to the user now" in held["message"]
 
 
 def test_failures_on_other_turns_are_not_counted(tmp_path, monkeypatch):
@@ -637,6 +787,12 @@ def test_computer_use_clicks_are_fine_on_other_turns(tmp_path, monkeypatch):
     assert not (held and "computer-use gate" in held.get("message", ""))
 
 
-def test_vision_off_means_tell_willie_and_stop(tmp_path, monkeypatch):
+def test_vision_off_does_not_tell_the_agent_to_stop(tmp_path, monkeypatch):
     rails, ctx, steer = _cua_setup(tmp_path, monkeypatch, vision=False)
-    assert "and stop" in steer["context"]
+    assert steer and "not running" in steer["context"]
+    assert "and stop" not in steer["context"]
+    assert "do not stop" in steer["context"].lower() or "Do not stop" in steer["context"]
+    # clicks are not held when vision is down
+    held = ctx.hooks["pre_tool_call"](tool_name="computer_use", args={"action": "click", "element": 1},
+                                      session_id="s", turn_id="t1")
+    assert not (held and "computer-use gate" in held.get("message", ""))

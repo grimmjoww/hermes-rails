@@ -1,6 +1,6 @@
 name: rails
-version: "0.2.0"
-description: "Keeps the agent on what Willie asked and shows every decision. d1-3B (local, Decision Guard) decides; Rails shows ⚖ ✅ ⛔ ❌ tags. Scope gate (watch-only) + workflow gate: code work loads the matching superpowers skill first, and 'done' after code edits needs a test run."
+version: "0.3.0"
+description: "Keeps the agent on what the user asked and shows every decision. d1-3B (local Decision Guard) decides; Rails shows ⚖ ✅ ⛔ ❌ tags. Scope gate (watch-only) + workflow gate: code work loads the matching skill first, and 'done' after code edits needs a test run."
 author: "grimmjoww"
 requires_hermes: ">=0.22.0"
 provides_hooks:
@@ -10,7 +10,7 @@ provides_hooks:
   - post_tool_call
   - post_llm_call
   - transform_tool_result
-provides_tools:  # toolset "decisions": d3 on Willie's PC (eyes.py); off layers are named, never faked
+provides_tools:  # toolset "decisions": local d3 if running (eyes.py); off layers are named, never faked
   - decide
   - screen_find
   - screen_check
@@ -20,26 +20,26 @@ config_schema:
     type: str
     choices: ["on", shadow, "off"]
     default: "on"
-    label: "Superpowers workflow gate"
-    description: "on: code work loads the right superpowers skill first, and 'done' needs a test run. shadow: only show what it would do. off: nothing."
+    label: "Workflow gate"
+    description: "on: code work loads the matching skill first (the superpowers plugin if installed, otherwise Hermes bundled skills), and 'done' needs a test run. shadow: only show what it would do. off: nothing."
   scope_mode:
     type: str
     choices: [shadow, block]
     default: shadow
     label: "Scope gate"
-    description: "shadow: show work you didn't ask for (⚖ would block). block: stop it and have Rei offer it in one line instead."
+    description: "shadow: show work you didn't ask for (⚖ would block). block: stop it and have the agent offer it in one line instead."
   screen_check_mode:
     type: str
     choices: ["on", shadow, "off"]
     default: shadow
     label: "Screen check before 'done'"
-    description: "After clicking or typing on screen, Computer Use Vision looks at the newest screenshot before Rei says done. on = an unfinished screen, an error, or no fresh look sends her back. shadow = only shows what it would do. off = no check."
+    description: "After clicking or typing on screen, Computer Use Vision looks at the newest screenshot before the agent says done. on = an unfinished screen, an error, or no fresh look sends the agent back. shadow = only shows what it would do. off = no check."
   computer_use_mode:
     type: str
     choices: ["on", shadow, "off"]
-    default: "on"
+    default: shadow
     label: "Computer use means computer_use + d3-turbo"
-    description: "When you ask for computer use: on = Rei is told to use computer_use on your real desktop with Computer Use Vision (d3-turbo) as her eyes, jev_computer_use / other browsers are held, and if computer use never worked you get a ⚠ line at the end. shadow = only shows it. off = nothing."
+    description: "When you ask for computer use: on = the agent is told to use computer_use on your real desktop with Computer Use Vision (d3-turbo) as its eyes when that server is up, stand-in browsers are held, and if computer use never worked you get a ⚠ line at the end. Clicks are not held when vision is down. shadow = only shows it. off = nothing."
   second_opinion_mode:
     type: str
     choices: ["on", shadow, "off"]
@@ -51,3 +51,13 @@ config_schema:
     default: 8
     label: "Steps allowed on a look-only question"
     description: "Past this many tool calls on a 'check / what is' question, Rails calls it a rabbit hole."
+  user_label:
+    type: str
+    default: "the user"
+    label: "What to call the user in model-facing text"
+    description: "Shown to the model in harness notes and prompts. Leave as 'the user' for a generic install, or set a name in this setting only."
+  agent_label:
+    type: str
+    default: "the agent"
+    label: "What to call the agent in model-facing text"
+    description: "Shown to the model in harness notes and prompts. Leave as 'the agent' for a generic install, or set a name in this setting only."

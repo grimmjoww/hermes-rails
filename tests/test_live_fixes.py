@@ -1,4 +1,4 @@
-"""Fixes from the live end-to-end test on Willie's PC (2026-11-11, real Hermes turns, real d1 and d3)."""
+"""Fixes from a live end-to-end test (2026-11-11, real Hermes turns, real d1 and d3)."""
 from test_eyes import _cua_setup
 
 
@@ -6,7 +6,16 @@ def test_steer_drives_computer_use_with_d3_and_jev_is_optional(tmp_path, monkeyp
     rails, ctx, steer = _cua_setup(tmp_path, monkeypatch)
     text = steer["context"]
     assert "Drive computer_use" in text and "screen_find" in text and "screen_check" in text
-    assert "If a jev_computer_use tool is installed" in text and "Start with jev_computer_use" not in text
+    assert "jev_computer_use" not in text  # not mentioned unless that tool is registered
+    ctx.tools = ["jev_computer_use"]
+    # labels already applied; run the steer helper again with the same session setup
+    rails2, ctx2, steer2 = _cua_setup(tmp_path, monkeypatch)
+    ctx2.tools = ["jev_computer_use"]
+    # _cua_setup already ran pre_llm_call before tools were set, so call cua_turn_start via hook after tagging tools
+    steer2 = ctx2.hooks["pre_llm_call"](session_id="s2", turn_id="t1",
+                                       user_message="can you use computer use and navigate to amazon")
+    text2 = steer2["context"]
+    assert "If a jev_computer_use tool is installed" in text2 and "Start with jev_computer_use" not in text2
 
 
 def test_a_failure_lets_the_agent_drive_computer_use_itself(tmp_path, monkeypatch):
