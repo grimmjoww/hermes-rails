@@ -71,4 +71,4 @@ config_schema:
     choices: [vision, text_first]
     default: vision
     label: "How a click target is chosen"
-    description: "vision: Computer Use Vision decides clicks. text_first: when the current screen has a numbered element list, Decision Guard picks which element matches the next action. A pick at 0.60 or above backs a click on that element (its index, or a point inside its box). An empty list, an unsure pick, or Decision Guard being down is logged and the click path stays as it is."
+    description: "vision: Computer Use Vision decides clicks. text_first: when the current screen has a numbered element list, Decision Guard picks which element matches the next action. A pick at 0.60 or above backs a click on that element (its index, or a point inside its box). An unsure pick, an empty list, or a canvas, game, or app with nothing clickable is aimed with screen_find on d3-turbo. If Computer Use Vision is down, that click is not held. Decision Guard being down leaves the click path as it is. d3-ultra is used only when Second Opinion is on."
