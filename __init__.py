@@ -78,6 +78,7 @@ WRITE_TOOLS = {"patch", "write_file"}
 # Kept as a Desktop setting. Periodic "still serving the ask?" checks start after min(4, this) look-only
 # steps. The old hard cap (steps > this) is no longer the rabbit-hole rule.
 LOOK_STEP_BUDGET = 8
+ELEMENT_LIST_MAX = 80  # numbered text list of clickable targets; offscreen and disabled are already left out
 # Terminal commands made only of these never change anything, whatever d1 thinks (d1 rated a plain `ls` 0.90).
 READ_ONLY_COMMANDS = {
     "ls", "dir", "cat", "type", "head", "tail", "less", "more", "grep", "egrep", "rg", "find", "wc", "echo", "printf",
@@ -1156,7 +1157,7 @@ _CUA: dict[str, dict] = {}     # session_id -> this turn's computer-use ask: {"o
 def apply_settings(ctx) -> None:
     """Read choices from Desktop → Settings → Plugins → Rails (plugins.entries.rails.settings) each turn,
     so a change there takes effect on the next message. A missing or invalid value keeps the setting above."""
-    global MODE, WORKFLOW_MODE, LOOK_STEP_BUDGET, SECOND_MODE, VISUAL_MODE, CUA_MODE, USER, AGENT
+    global MODE, WORKFLOW_MODE, LOOK_STEP_BUDGET, ELEMENT_LIST_MAX, SECOND_MODE, VISUAL_MODE, CUA_MODE, USER, AGENT
     get = getattr(ctx, "get_config", None)
     if not callable(get):
         return
@@ -1165,6 +1166,7 @@ def apply_settings(ctx) -> None:
         workflow = str(get("workflow_mode", default=WORKFLOW_MODE)).lower()
         scope = str(get("scope_mode", default=MODE)).lower()
         budget = int(get("look_step_budget", default=LOOK_STEP_BUDGET))
+        element_cap = int(get("element_list_max", default=ELEMENT_LIST_MAX))
         second = str(get("second_opinion_mode", default=SECOND_MODE)).lower()
         visual = str(get("screen_check_mode", default=VISUAL_MODE)).lower()
         user = str(get("user_label", default=USER) or USER).strip()
@@ -1178,6 +1180,7 @@ def apply_settings(ctx) -> None:
     WORKFLOW_MODE = workflow if workflow in ("on", "shadow", "off") else WORKFLOW_MODE
     MODE = scope if scope in ("shadow", "block") else MODE
     LOOK_STEP_BUDGET = budget if budget >= 1 else LOOK_STEP_BUDGET
+    ELEMENT_LIST_MAX = element_cap if element_cap >= 1 else ELEMENT_LIST_MAX
     if user:
         USER = user
     if agent:
