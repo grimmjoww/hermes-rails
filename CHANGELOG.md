@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Add a 1200×600, center-cropped catalog card at `assets/rails-card.jpg`, preserving the existing banner.
+- Patch release for the catalog image and re-pin; plugin behavior is unchanged.
+
 ## 0.4.0
 
 - Text-first computer use. A screen can become a numbered element list (`element_list_max`, default 80). With `computer_use_driver=text_first`, d1 picks the element for the next click. A pick at 0.60 or above backs that click. An unsure pick, an empty list, or a canvas or game is aimed with `screen_find` on d3-turbo. If d3 is down, the click is not held. If d1 is down, the click path stays as it is. The end-of-turn screen check still runs, and says unavailable when d3 is down.
