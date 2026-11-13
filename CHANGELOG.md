@@ -3,7 +3,7 @@
 ## 0.4.3
 
 - Fix D1 authorization bypass for continued shell commands, including curl SMTP/SMTPS with Bash backslashes or PowerShell backticks and LF/CRLF line endings.
-- Join continuations before command detection, preserving token fragments and command boundaries after escaped escape characters.
+- Use shell-aware, linear-time continuation scanning before action detection; preserve escaped-marker and Bash CRLF command boundaries, and check supported interpretations conservatively when the shell is unknown.
 - Add regression coverage for denied, uncertain, unavailable, authorized, shadow-mode, and legitimate read-only actions.
 
 ## 0.4.2

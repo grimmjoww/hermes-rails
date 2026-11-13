@@ -6,7 +6,7 @@ from test_money_email import _install
 from test_rails import load
 
 
-CONTINUATIONS = ["\\\n", "\\\r\n", "`\n", "`\r\n"]
+CONTINUATIONS = ["\\\n", "`\n", "`\r\n"]
 
 
 @pytest.mark.parametrize("continuation", CONTINUATIONS)
@@ -48,7 +48,7 @@ def test_continued_authorization_outcomes(tmp_path, monkeypatch, continuation, v
     if verdict == "shadow":
         rails.MONEY_EMAIL_MODE = "shadow"
     result = ctx.hooks["pre_tool_call"](
-        tool_name="powershell", args={"cmd": "curl " + continuation + " --url smtp://example.invalid -T -"},
+        tool_name="terminal", args={"cmd": "curl " + continuation + " --url smtp://example.invalid -T -"},
         session_id="s", turn_id="t1")
     assert [call for call in seen if "authorize" in call] == [["authorize"]]
     if verdict in {"yes", "shadow"}:
@@ -68,8 +68,9 @@ def test_benign_continued_commands_do_not_ask_for_authorization(tmp_path, monkey
     rails, ctx, _ = _cua_setup(tmp_path, monkeypatch, mode="off")
     seen = _install(rails)
     command = template.format(c=continuation)
-    assert rails._terminal_area(command) is None
-    ctx.hooks["pre_tool_call"](tool_name="terminal", args={"command": command},
+    shell = "bash" if continuation.startswith(chr(92)) else "powershell"
+    assert rails._terminal_area(command, shell) is None
+    ctx.hooks["pre_tool_call"](tool_name=shell, args={"command": command},
                                session_id="s", turn_id="t1")
     assert ["authorize"] not in seen
 
@@ -89,6 +90,8 @@ def test_escaped_escape_keeps_new_command_boundary(tmp_path, marker, newline):
     command = "echo " + marker * 2 + newline + "curl --url smtp://example.invalid -T -"
     assert rails._terminal_area(command) == "email"
     assert not rails.read_only(command)
-    # Odd runs still continue; the two remaining escapes are literal data.
+    # Odd runs still continue only for supported marker/newline pairs.
+    if marker == chr(92) and newline == "\r\n":
+        return
     command = "curl " + marker * 3 + newline + " --url smtp://example.invalid -T -"
     assert rails._terminal_area(command) == "email"

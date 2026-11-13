@@ -251,29 +251,41 @@ def _short(tool: str, args: dict) -> str:
     return tool
 
 
-_SHELL_CONTINUATION = re.compile(r"(\\+|`+)\r?\n")
 _SEGMENTS = re.compile(r"&&|\|\||[;|\n]")
 _WRITE_REDIRECT = re.compile(r"(?<![0-9&])>{1,2}(?!\s*&|\s*/dev/null|\s*\$null|\s*nul\b)")
 
 
-def _join_shell_continuations(command: str) -> str:
-    """Join escaped newlines, retaining boundaries after an escaped escape."""
-    def join(match):
-        markers = match.group(1)
-        return markers[:-1] if len(markers) % 2 else match.group(0)
+def _join_shell_continuations(command: str, shell: str) -> str:
+    """Linear scan using the escape character and newline rules of one shell.
 
-    return _SHELL_CONTINUATION.sub(join, command)
+    Preserve escaped escape characters and other escaped characters as pairs.
+    Bash escapes LF, not CRLF; PowerShell backticks continue either ending.
+    This is continuation handling, not a full shell parser.
+    """
+    marker = "\\" if shell == "bash" else "`"
+    result = []
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if char == marker and i + 1 < len(command):
+            if command[i + 1] == "\n":
+                i += 2
+                continue
+            if shell == "powershell" and command[i + 1:i + 3] == "\r\n":
+                i += 3
+                continue
+            result.append(command[i:i + 2])
+            i += 2
+        else:
+            result.append(char)
+            i += 1
+    return "".join(result)
 
 
 def _command_segments(command: str):
     """Yield (program, rest_lower, words) for each piece of a shell/PowerShell command."""
     if not isinstance(command, str) or not command.strip():
         return
-    # Remove escaped physical line breaks before finding logical commands.
-    # Both Bash and PowerShell forms are recognized conservatively because the
-    # terminal tool does not always identify its shell. Delete rather than add
-    # whitespace: continuations may occur inside a program, option, or URL.
-    command = _join_shell_continuations(command)
     for segment in _SEGMENTS.split(command):
         words = segment.strip().split()
         if not words:
@@ -1220,11 +1232,31 @@ def _terminal_command(tool: str, args: dict) -> str | None:
     return None
 
 
-def _terminal_area(command: str) -> str | None:
+def _terminal_area(command: str, shell: str = "") -> str | None:
+    """Inspect the known shell, or all supported interpretations if unspecified.
+
+    Generic terminal/shell tools do not reliably identify their interpreter.
+    Keep the original view as well so normalization cannot hide a previously
+    detected action. Ambiguous generic-shell commands may require authorization.
+    """
+    shell = shell.lower()
+    if shell in {"bash", "powershell"}:
+        views = [_join_shell_continuations(command, shell)]
+    else:
+        views = [command, _join_shell_continuations(command, "bash"),
+                 _join_shell_continuations(command, "powershell")]
+    for view in dict.fromkeys(views):
+        area = _terminal_area_view(view)
+        if area:
+            return area
+    return None
+
+
+def _terminal_area_view(command: str) -> str | None:
     """'money' or 'email' for a command that sends mail or hits a payment API. Mentions in a read do not count."""
     if not command.strip():
         return None
-    paying = bool(PAYMENT_API_RE.search(_join_shell_continuations(command)))
+    paying = bool(PAYMENT_API_RE.search(command))
     for program, rest, words in _command_segments(command):
         # curl supports SMTP directly, including implicit SMTP via --proto-default.
         # Parse tokens rather than treating mentions in echo/cat as sends. Fail
@@ -1347,7 +1379,7 @@ def sensitive_step(tool: str, args: dict, elements=None, finds=None) -> str | No
         return None
     command = _terminal_command(tool, args)
     if command is not None:
-        return _terminal_area(command)
+        return _terminal_area(command, tool)
     if _email_tool_decision(tool, args):
         return "email"
     if not _scans_surface(tool, args):
