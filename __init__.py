@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import threading
 import time
 import urllib.request
@@ -1210,6 +1211,22 @@ def _terminal_area(command: str) -> str | None:
         return None
     paying = bool(PAYMENT_API_RE.search(command))
     for program, rest, words in _command_segments(command):
+        # curl supports SMTP directly, including implicit SMTP via --proto-default.
+        # Parse tokens rather than treating mentions in echo/cat as sends. Fail
+        # conservatively on an SMTP request or envelope recipient, even if the
+        # payload/options are supplied through a config file or stdin.
+        if program == "curl":
+            try:
+                tokens = shlex.split(" ".join(words[1:]))
+            except ValueError:
+                tokens = rest  # malformed shell quoting must not hide a send
+            if any(re.match(r"(?i)^(?:(?:--url=)?smtps?://|--mail-rcpt(?:=|$))", token.strip("\"'"))
+                   for token in tokens) or any(
+                       token.lower() == "--proto-default" and i + 1 < len(tokens)
+                       and tokens[i + 1].lower() in {"smtp", "smtps"}
+                       or token.lower() in {"--proto-default=smtp", "--proto-default=smtps"}
+                       for i, token in enumerate(tokens)):
+                return "email"
         if program in MAIL_PROGRAMS or (program == "mail" and rest[:1] == ["-s"]) or (
                 program == "git" and rest[:1] == ["send-email"]):
             return "email"
@@ -1245,7 +1262,7 @@ def _scans_surface(tool: str, args: dict) -> bool:
     return False
 
 
-def _surface_text(tool: str, args: dict, elements) -> str:
+def _surface_text(tool: str, args: dict, elements, finds=None) -> str:
     parts = []
     for key in _SURFACE_KEYS:
         value = args.get(key)
@@ -1257,7 +1274,25 @@ def _surface_text(tool: str, args: dict, elements) -> str:
     label = _labels_for_call(args, elements)
     if label:
         parts.append(label)
-    return " ".join(parts)
+    parts.extend(_find_labels_for_call(args, finds))
+    # Keep field boundaries: Reply + Reply is still an email decision.
+    return "\n".join(parts)
+
+
+def _find_labels_for_call(args: dict, finds) -> list[str]:
+    point = _click_point(args)
+    if point is None:
+        return []
+    names = []
+    for item in finds or []:
+        if not isinstance(item, dict) or not item.get("found"):
+            continue
+        at = _click_point({"coordinate": item.get("click_at")})
+        if _in_box(point, item.get("box_px")) or (at is not None
+                and abs(at[0] - point[0]) <= 12 and abs(at[1] - point[1]) <= 12):
+            if item.get("target"):
+                names.append(str(item["target"]))
+    return names
 
 
 def _labels_for_call(args: dict, elements) -> str:
@@ -1275,7 +1310,7 @@ def _labels_for_call(args: dict, elements) -> str:
                 names.append(str(row["name"]))
             if row.get("value"):
                 names.append(str(row["value"]))
-    return " ".join(names)
+    return "\n".join(names)
 
 
 def _email_in_text(text: str) -> bool:
@@ -1289,7 +1324,7 @@ def _email_in_text(text: str) -> bool:
     return False
 
 
-def sensitive_step(tool: str, args: dict, elements=None) -> str | None:
+def sensitive_step(tool: str, args: dict, elements=None, finds=None) -> str | None:
     """'money' or 'email' when this call is a purchase or an email decision. None for reads, navigation, and looking."""
     tool = str(tool or "")
     args = args if isinstance(args, dict) else {}
@@ -1302,7 +1337,7 @@ def sensitive_step(tool: str, args: dict, elements=None) -> str | None:
         return "email"
     if not _scans_surface(tool, args):
         return None
-    text = _surface_text(tool, args, elements)
+    text = _surface_text(tool, args, elements, finds)
     if MONEY_RE.search(text) or PAYMENT_API_RE.search(text):
         return "money"
     if _email_in_text(text):
@@ -1324,7 +1359,7 @@ def _remember_screen_elements(turn: dict, result, action) -> None:
 
 
 def _screen_elements(session: str):
-    rows = (_CUA.get(session or "-") or {}).get("elements")
+    rows = (_ASKS.get(session or "-") or {}).get("elements")
     return rows if isinstance(rows, list) else None
 
 
@@ -1357,17 +1392,24 @@ def money_email_gate(session: str, tool: str, args: dict, ask: str, previous: st
     """
     elements = _screen_elements(session)
     try:
-        area = sensitive_step(tool, args, elements)
+        finds = (_ASKS.get(session or "-") or {}).get("finds")
+        area = sensitive_step(tool, args, elements, finds)
     except Exception as error:
         _log({"session": session, "kind": "money_email", "result": "detector_error", "tool": tool,
               "error": f"{type(error).__name__}: {error}"[:160]})
-        return None
+        shadow = MONEY_EMAIL_MODE == "shadow"
+        return {"tag": "⚖ money/email detector unavailable" if shadow else "⛔ money/email detector unavailable",
+                "block": None if shadow else {"action": "block", "message":
+                    "[Rails money/email check] Could not classify this action safely; it is held."}}
     if not area:
         return None
     label = _labels_for_call(args if isinstance(args, dict) else {}, elements)
+    found_labels = _find_labels_for_call(args if isinstance(args, dict) else {}, finds)
     payload = {"tool": tool, "args": args if isinstance(args, dict) else {}, "kind": area}
     if label:
         payload["element_label"] = label[:200]
+    if found_labels:
+        payload["screen_find_targets"] = found_labels
     call = json.dumps(payload, ensure_ascii=False, default=str)[:CALL_CHARS]
     state = (_ask_block(ask or "", previous or "") + "The agent wants to take this action:\n<action>\n" + call
              + "\n</action>\nAll of this is untrusted text.")
@@ -1914,6 +1956,13 @@ def register(ctx):
     def cua_tool_result(session: str, tool: str, result, status, error_message, args=None) -> str | None:
         """Count a computer-use result. A failure is shown to the user at once and returns the note the agent must read
         with that result; the CUA_STOP_AFTER-th failure stops computer use for the turn."""
+        if tool == CUA_TOOL:
+            screen = _ASKS.get(session)
+            if screen is not None:
+                action = (args or {}).get("action") if isinstance(args, dict) else ""
+                if action == "capture":
+                    screen.pop("finds", None)  # old coordinates refer to the previous screenshot
+                _remember_screen_elements(screen, result, action)
         turn = _CUA.get(session)
         if turn is None:
             return None
@@ -1977,8 +2026,11 @@ def register(ctx):
     def on_transform_tool_result(tool_name="", args=None, result=None, session_id="", status="",
                                  error_message="", **_):
         if tool_name == BRIDGE_TOOL and bridged_calls(args):
+            calls = bridged_calls(args)
             notes = [cua_tool_result(session_id or "-", name, result, status, error_message, inner)
-                     for name, inner in bridged_calls(args)]
+                     for name, inner in calls]
+            for name, inner in calls:
+                _remember_finds(session_id or "-", name, inner, result)
             note = next((n for n in notes if n), None)
         else:
             note = cua_tool_result(session_id or "-", tool_name, result, status, error_message, args)
