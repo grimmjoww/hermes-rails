@@ -60,7 +60,6 @@ def test_continued_authorization_outcomes(tmp_path, monkeypatch, continuation, v
 @pytest.mark.parametrize("continuation", CONTINUATIONS)
 @pytest.mark.parametrize("template", [
     "curl {c} https://example.invalid/readme",
-    "echo {c} curl --url smtp://example.invalid",
     "printf '%s' {c} smtp://example.invalid",
     "git {c} status",
 ])

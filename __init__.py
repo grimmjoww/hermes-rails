@@ -1237,11 +1237,12 @@ def _terminal_area(command: str, shell: str = "") -> str | None:
 
     Generic terminal/shell tools do not reliably identify their interpreter.
     Keep the original view as well so normalization cannot hide a previously
-    detected action. Ambiguous generic-shell commands may require authorization.
+    detected action, including newlines in comments. Ambiguous physical command
+    boundaries may conservatively require authorization even in known shells.
     """
     shell = shell.lower()
     if shell in {"bash", "powershell"}:
-        views = [_join_shell_continuations(command, shell)]
+        views = [command, _join_shell_continuations(command, shell)]
     else:
         views = [command, _join_shell_continuations(command, "bash"),
                  _join_shell_continuations(command, "powershell")]
