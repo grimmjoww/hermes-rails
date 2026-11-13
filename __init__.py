@@ -251,14 +251,29 @@ def _short(tool: str, args: dict) -> str:
     return tool
 
 
+_SHELL_CONTINUATION = re.compile(r"(\\+|`+)\r?\n")
 _SEGMENTS = re.compile(r"&&|\|\||[;|\n]")
 _WRITE_REDIRECT = re.compile(r"(?<![0-9&])>{1,2}(?!\s*&|\s*/dev/null|\s*\$null|\s*nul\b)")
+
+
+def _join_shell_continuations(command: str) -> str:
+    """Join escaped newlines, retaining boundaries after an escaped escape."""
+    def join(match):
+        markers = match.group(1)
+        return markers[:-1] if len(markers) % 2 else match.group(0)
+
+    return _SHELL_CONTINUATION.sub(join, command)
 
 
 def _command_segments(command: str):
     """Yield (program, rest_lower, words) for each piece of a shell/PowerShell command."""
     if not isinstance(command, str) or not command.strip():
         return
+    # Remove escaped physical line breaks before finding logical commands.
+    # Both Bash and PowerShell forms are recognized conservatively because the
+    # terminal tool does not always identify its shell. Delete rather than add
+    # whitespace: continuations may occur inside a program, option, or URL.
+    command = _join_shell_continuations(command)
     for segment in _SEGMENTS.split(command):
         words = segment.strip().split()
         if not words:
@@ -1209,7 +1224,7 @@ def _terminal_area(command: str) -> str | None:
     """'money' or 'email' for a command that sends mail or hits a payment API. Mentions in a read do not count."""
     if not command.strip():
         return None
-    paying = bool(PAYMENT_API_RE.search(command))
+    paying = bool(PAYMENT_API_RE.search(_join_shell_continuations(command)))
     for program, rest, words in _command_segments(command):
         # curl supports SMTP directly, including implicit SMTP via --proto-default.
         # Parse tokens rather than treating mentions in echo/cat as sends. Fail
