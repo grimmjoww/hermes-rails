@@ -255,6 +255,33 @@ _SEGMENTS = re.compile(r"&&|\|\||[;|\n]")
 _WRITE_REDIRECT = re.compile(r"(?<![0-9&])>{1,2}(?!\s*&|\s*/dev/null|\s*\$null|\s*nul\b)")
 
 
+def _join_shell_continuations(command: str, shell: str) -> str:
+    """Linear scan using the escape character and newline rules of one shell.
+
+    Preserve escaped escape characters and other escaped characters as pairs.
+    Bash escapes LF, not CRLF; PowerShell backticks continue either ending.
+    This is continuation handling, not a full shell parser.
+    """
+    marker = "\\" if shell == "bash" else "`"
+    result = []
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if char == marker and i + 1 < len(command):
+            if command[i + 1] == "\n":
+                i += 2
+                continue
+            if shell == "powershell" and command[i + 1:i + 3] == "\r\n":
+                i += 3
+                continue
+            result.append(command[i:i + 2])
+            i += 2
+        else:
+            result.append(char)
+            i += 1
+    return "".join(result)
+
+
 def _command_segments(command: str):
     """Yield (program, rest_lower, words) for each piece of a shell/PowerShell command."""
     if not isinstance(command, str) or not command.strip():
@@ -1205,7 +1232,28 @@ def _terminal_command(tool: str, args: dict) -> str | None:
     return None
 
 
-def _terminal_area(command: str) -> str | None:
+def _terminal_area(command: str, shell: str = "") -> str | None:
+    """Inspect the known shell, or all supported interpretations if unspecified.
+
+    Generic terminal/shell tools do not reliably identify their interpreter.
+    Keep the original view as well so normalization cannot hide a previously
+    detected action, including newlines in comments. Ambiguous physical command
+    boundaries may conservatively require authorization even in known shells.
+    """
+    shell = shell.lower()
+    if shell in {"bash", "powershell"}:
+        views = [command, _join_shell_continuations(command, shell)]
+    else:
+        views = [command, _join_shell_continuations(command, "bash"),
+                 _join_shell_continuations(command, "powershell")]
+    for view in dict.fromkeys(views):
+        area = _terminal_area_view(view)
+        if area:
+            return area
+    return None
+
+
+def _terminal_area_view(command: str) -> str | None:
     """'money' or 'email' for a command that sends mail or hits a payment API. Mentions in a read do not count."""
     if not command.strip():
         return None
@@ -1332,7 +1380,7 @@ def sensitive_step(tool: str, args: dict, elements=None, finds=None) -> str | No
         return None
     command = _terminal_command(tool, args)
     if command is not None:
-        return _terminal_area(command)
+        return _terminal_area(command, tool)
     if _email_tool_decision(tool, args):
         return "email"
     if not _scans_surface(tool, args):

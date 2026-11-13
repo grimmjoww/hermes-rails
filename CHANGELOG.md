@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3
+
+- Fix D1 authorization bypass for continued shell commands, including curl SMTP/SMTPS with Bash backslashes or PowerShell backticks and LF/CRLF line endings.
+- Use shell-aware, linear-time continuation scanning before action detection; preserve escaped-marker and Bash CRLF command boundaries, and check supported interpretations conservatively when the shell is unknown.
+- Add regression coverage for denied, uncertain, unavailable, authorized, shadow-mode, and legitimate read-only actions.
+
 ## 0.4.2
 
 - Fix four money/email detection bypasses reported on PR #5: cached coordinate clicks, captured element clicks outside the optional computer-use gate, explicit curl SMTP/SMTPS requests, and duplicated Reply/Forward labels.
