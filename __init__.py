@@ -1153,13 +1153,15 @@ def scheduled_turn(turn_key: str) -> bool:
 
 
 # Purchase words for a click, a typed field, or a URL. "cart" is not one of them: adding to a cart is still browsing.
-# Bare "order" is not one either. "git checkout" is excluded with a fixed-width lookbehind.
+# Bare "order" is not one either. "place your order" and "purchase" are. "git checkout" is excluded with a
+# fixed-width lookbehind.
 MONEY_RE = re.compile(
     r"(?i)(?<!git )check\s*out"
-    r"|\bplace\s+(?:an?\s+)?order\b"
+    r"|\bplace\s+(?:(?:an?|your|my|the|this)\s+)?order\b"
     r"|\bbuy(?:ing)?\b"
     r"|\bpay(?:ing|ment|ments)?\b"
     r"|\bpaid\b"
+    r"|\bpurchas(?:e|es|ing)\b"
     r"|\bsubscri(?:be|ption|ptions)\b"
     r"|\bdonat(?:e|ion|ions)\b"
     r"|\b(?:credit|debit)\s+cards?\b"
@@ -1204,14 +1206,116 @@ def _terminal_command(tool: str, args: dict) -> str | None:
     return None
 
 
+# A charge or a send is often wrapped. The program that matters is the one after these, not argv[0].
+_COMMAND_WRAPPERS = {"sudo", "doas", "pkexec", "env", "command", "nohup", "nice", "time", "setsid", "busybox"}
+_SHELLS = {"bash", "sh", "dash", "zsh", "ksh", "ash"}
+_SUDO_ARG_FLAGS = {"-u", "-g", "-p", "-h", "-C", "-T", "-r", "-t", "-U", "--user", "--group", "--prompt",
+                   "--close-from", "--role", "--type", "--other-user"}
+_ENV_ARG_FLAGS = {"-u", "--unset", "-C", "--chdir"}
+
+
+def _word_name(token: str) -> str:
+    return token.strip().strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+
+
+def _shell_inner(program: str, rest_words: list[str]) -> str | None:
+    """The script of `sh -c ...`, `powershell -Command ...`, or `cmd /c ...`. None when this is not one."""
+    if not rest_words:
+        return None
+    lower = [word.lower() for word in rest_words]
+    if program in _SHELLS:
+        for index, word in enumerate(rest_words):
+            low = word.lower()
+            if low in {"-c", "--command"} or (low.startswith("-") and not low.startswith("--") and low.endswith("c")):
+                inner = " ".join(rest_words[index + 1:]).strip()
+                return inner or None
+        return None
+    flags = ("-command", "-c", "/command") if program in {"pwsh", "powershell"} else (
+        ("/c", "/k", "-c") if program == "cmd" else ())
+    for flag in flags:
+        if flag in lower:
+            inner = " ".join(rest_words[lower.index(flag) + 1:]).strip()
+            return inner or None
+    return None
+
+
+def _invocations(command: str, depth: int = 0):
+    """Yield (program, rest) for each real program, looking through sudo/env and a shell -c script.
+
+    Quoting is already gone: the segment splitter splits on whitespace, so `bash -c "stripe charges
+    create"` arrives as bash, -c, stripe, charges, create. Joining the words after -c rebuilds the
+    inner command. Words inside echo, cat, and other reads are not programs.
+    """
+    if depth > 4 or not isinstance(command, str) or not command.strip():
+        return
+    for _program, _rest, words in _command_segments(command):
+        yield from _invocations_in_words(words, depth)
+
+
+def _invocations_in_words(words: list[str], depth: int):
+    index = 0
+    while index < len(words):
+        name = _word_name(words[index])
+        if not name:
+            index += 1
+            continue
+        if name in _COMMAND_WRAPPERS and name != "env" and name != "busybox":
+            index += 1
+            while index < len(words) and words[index].startswith("-"):
+                flag = words[index].lower()
+                index += 1
+                if name == "sudo" and flag in _SUDO_ARG_FLAGS and index < len(words):
+                    index += 1
+                elif name == "nice" and flag in {"-n", "--adjustment"} and index < len(words):
+                    index += 1
+            continue
+        if name == "env":
+            index += 1
+            while index < len(words):
+                word = words[index]
+                if word.startswith("-"):
+                    index += 1
+                    if word.lower() in _ENV_ARG_FLAGS and index < len(words):
+                        index += 1
+                    continue
+                if "=" in word:
+                    index += 1
+                    continue
+                break
+            continue
+        if name == "busybox":
+            index += 1
+            continue
+        rest_words = words[index + 1:]
+        inner = _shell_inner(name, rest_words)
+        if inner is not None:
+            yield from _invocations(inner, depth + 1)
+            return
+        yield name, [_word_name(word) for word in rest_words]
+        return
+
+
+def _mail_sends(rest: list[str]) -> bool:
+    """`mail dest` sends. `mail` alone, and `mail -f mailbox`, reads."""
+    if not rest or rest[0] in {"-f", "-p", "-h", "-e"}:
+        return False
+    return any(not word.startswith("-") for word in rest)
+
+
+def _email_invocation(program: str, rest: list[str]) -> bool:
+    if program in MAIL_PROGRAMS:
+        return True
+    if program == "mail" and (_mail_sends(rest) or rest[:1] == ["-s"]):
+        return True
+    return program == "git" and rest[:1] == ["send-email"]
+
 def _terminal_area(command: str) -> str | None:
     """'money' or 'email' for a command that sends mail or hits a payment API. Mentions in a read do not count."""
-    if not command.strip():
+    if not isinstance(command, str) or not command.strip():
         return None
     paying = bool(PAYMENT_API_RE.search(command))
-    for program, rest, words in _command_segments(command):
-        if program in MAIL_PROGRAMS or (program == "mail" and rest[:1] == ["-s"]) or (
-                program == "git" and rest[:1] == ["send-email"]):
+    for program, rest in _invocations(command):
+        if _email_invocation(program, rest):
             return "email"
         if program in {"stripe", "paypal"} and any(word.strip("-") in PAYMENT_CLI_WORDS for word in rest):
             paying = True

@@ -124,10 +124,21 @@ def test_ordinary_reads_and_navigation_are_not_money_or_email(tmp_path, monkeypa
     assert rails.sensitive_step("computer_use", {"action": "click", "target": "Search"}) is None
     assert rails.sensitive_step("computer_use", {"action": "type", "text": "hello"}) is None
     assert rails.sensitive_step("terminal", {"command": "git checkout -- app/auth.py"}) is None
+    assert rails.sensitive_step("terminal", {"command": "sudo git checkout -- app/auth.py"}) is None
     assert rails.sensitive_step("terminal", {"command": "curl -X POST x"}) is None
     assert rails.sensitive_step("terminal", {"command": "cat app/payments.py"}) is None
     assert rails.sensitive_step("terminal", {"command": "curl https://api.stripe.com/v1/payment_intents"}) == "money"
+    assert rails.sensitive_step("terminal", {"command": "sudo stripe charges create --amount 5000"}) == "money"
+    assert rails.sensitive_step("terminal", {"command": "env STRIPE_KEY=sk stripe charges create"}) == "money"
+    assert rails.sensitive_step("terminal", {"command": 'bash -c "stripe charges create"'}) == "money"
+    assert rails.sensitive_step("terminal", {"command": "echo stripe charges create"}) is None
     assert rails.sensitive_step("terminal", {"command": "git send-email origin"}) == "email"
+    assert rails.sensitive_step("terminal", {"command": "sudo git send-email origin"}) == "email"
+    assert rails.sensitive_step("terminal", {"command": "sudo sendmail alice@example.com"}) == "email"
+    assert rails.sensitive_step("terminal", {"command": "mail alice@example.com"}) == "email"
+    assert rails.sensitive_step("terminal", {"command": "mail"}) is None
+    assert rails.sensitive_step("terminal", {"command": "mail -f /var/mail/user"}) is None
+    assert rails.sensitive_step("terminal", {"command": "powershell -Command Send-MailMessage -To a@b.c"}) == "email"
     assert rails.sensitive_step("gmail_list", {"action": "list"}) is None
     assert rails.sensitive_step("outlook", {"action": "reply"}) == "email"
     assert rails.sensitive_step("delete_email", {}) == "email"
@@ -136,6 +147,9 @@ def test_ordinary_reads_and_navigation_are_not_money_or_email(tmp_path, monkeypa
     assert rails.sensitive_step("computer_use", {"action": "click", "target": "Send"}) is None
     assert rails.sensitive_step("computer_use", {"action": "click", "target": "Donate"}) == "money"
     assert rails.sensitive_step("computer_use", {"action": "click", "target": "Transfer money"}) == "money"
+    assert rails.sensitive_step("computer_use", {"action": "click", "target": "Place your order"}) == "money"
+    assert rails.sensitive_step("computer_use", {"action": "click", "target": "Purchase"}) == "money"
+    assert rails.sensitive_step("computer_use", {"action": "click", "target": "order"}) is None
     assert rails.sensitive_step("terminal", {"command": "echo https://api.stripe.com/v1/charges"}) is None
     assert rails.sensitive_step("screen_find", {"target": "Checkout"}) is None
     assert rails.sensitive_step("computer_use", {"action": "click", "element": 4},
@@ -168,3 +182,14 @@ def test_ordinary_reads_and_navigation_are_not_money_or_email(tmp_path, monkeypa
     point = _do(ctx, "computer_use", {"action": "click", "coordinate": [20, 20]})
     assert point["action"] == "block" and "money" in point["message"]
     assert all(questions == ["authorize"] for questions in seen)
+
+    order = _do(ctx, "computer_use", {"action": "click", "target": "Place your order"})
+    assert order["action"] == "block" and "money" in order["message"]
+    wrapped = ctx.hooks["pre_tool_call"](tool_name="terminal",
+                                         args={"command": "sudo stripe charges create --amount 5000"},
+                                         session_id="s", turn_id="t1")
+    assert wrapped["action"] == "block" and "money" in wrapped["message"]
+    plain_mail = ctx.hooks["pre_tool_call"](tool_name="terminal",
+                                            args={"command": "mail alice@example.com"},
+                                            session_id="s", turn_id="t1")
+    assert plain_mail["action"] == "block" and "email" in plain_mail["message"]

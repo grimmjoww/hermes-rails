@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.2
+
+- The money and email check looks through `sudo`, `env`, `command`, and a shell `-c` script, so `sudo stripe charges create`, `sudo sendmail`, and `powershell -Command Send-MailMessage` are held the same way as the bare command. `mail recipient` counts as a send. `mail` with no recipient, and `mail -f`, still do not.
+- A click or typed field that says "place your order" or "purchase" is a money step. Adding to a cart, and a bare "order", still are not.
+
 ## 0.4.1
 
 - Add a 1200×600, center-cropped catalog card at `assets/rails-card.jpg`, preserving the existing banner.
