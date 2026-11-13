@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- Fix four money/email detection bypasses reported on PR #5: cached coordinate clicks, captured element clicks outside the optional computer-use gate, explicit curl SMTP/SMTPS requests, and duplicated Reply/Forward labels.
+- Hold detector uncertainty/errors in on mode, retain shadow behavior, and add focused regression and legitimate-action variants.
+- Document detection boundaries: this is not exhaustive action recognition or a sandbox; no real payments or email sends were used in validation.
+
 ## 0.4.1
 
 - Add a 1200×600, center-cropped catalog card at `assets/rails-card.jpg`, preserving the existing banner.
