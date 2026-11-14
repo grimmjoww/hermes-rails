@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.5
+
+- Fix a money/email bypass in 0.4.4: a quoted program name inside `$(...)` or backticks (`echo $('sendmail' a@b)`) was removed before detection, so the step ran unchecked.
+- The money/email check now also works the other way round. A step the detector does not recognise must be proven harmless, or d1 is asked: a terminal command or code that mentions mail or payments, a command that hides what it runs (`eval`, `iex`, text piped into a shell, PowerShell `-EncodedCommand`, a variable as the program), and a click with no known label on a mail or payment screen. A parser miss now costs one d1 question, not an unchecked send.
+- For such a step d1 first answers whether it does anything at all. Only a confident no clears it; otherwise the usual authorization question decides, and d1 down holds it. A step the detector recognises itself still asks only the authorization question.
+- Proven harmless without asking d1: read-and-print programs with the word only in their arguments (`cat docs/sendmail.md`, `git log --grep=stripe.com`), fully single-quoted text, `curl --help`, and package installs (`pip install stripe`).
+- A lone `&` now separates commands (`echo hi & rm -rf build`) for the read-only, mutating and money/email checks.
+- New generated test matrix: about 7,500 combinations of mail program, quoting, wrapper and shell context must all reach d1.
+
 ## 0.4.4
 
 - Fix `money_email_check` in `plugin.yaml`: the unquoted `on` loaded as the boolean `True`, so switching back from `shadow` to `on` did not take. The choice and default are now quoted, and a `True` value is read as `on`.
