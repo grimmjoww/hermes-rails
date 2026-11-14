@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.4
+
+- Fix `money_email_check` in `plugin.yaml`: the unquoted `on` loaded as the boolean `True`, so switching back from `shadow` to `on` did not take. The choice and default are now quoted, and a `True` value is read as `on`.
+- Money check now catches "Place your order", "Purchase", "Complete purchase", "Submit order", "Confirm order", and "Order now". "Check out this video" and "Pay attention" are no longer treated as money.
+- Email check now catches a lone Send, Delete, or Archive click, and Ctrl/Cmd+Enter, when the current screen looks like a mail app (Inbox, Compose, Subject, ...). Outside a mail app a lone Send is still not an email step.
+- Commands inside `$(...)`, backticks, and `<(...)` are now inspected, and wrappers (`sudo`, `env`, `nohup`, `timeout`, `xargs`, leading `VAR=value`) are looked through, for the money/email check and for the read-only / mutating checks. A command with a substitution is never read-only.
+- In a terminal command, `/checkout` and `/v1/payments` count as a payment call only inside a URL, so `cd src/checkout && npm test` is not held.
+- Long tokens are masked in every logged string, not only the `call` line. Session and turn ids are kept.
+- A turn from an already-tracked session no longer evicts another session's ask.
+
 ## 0.4.3
 
 - Fix D1 authorization bypass for continued shell commands, including curl SMTP/SMTPS with Bash backslashes or PowerShell backticks and LF/CRLF line endings.
