@@ -214,11 +214,27 @@ _TAGS: dict[tuple, dict] = {}  # (session_id, turn_id) -> {"handle", "on", "uncl
 _MAX = 64
 
 
+_UNMASKED_LOG_KEYS = {"session", "turn"}  # ids, needed to follow one turn through the log
+
+
+def _mask(value):
+    """Long tokens (keys, hashes) never reach the log, wherever in the entry they sit."""
+    if isinstance(value, str):
+        return _LONG_TOKEN.sub("…", value)
+    if isinstance(value, dict):
+        return {key: _mask(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_mask(item) for item in value]
+    return value
+
+
 def _log(entry: dict) -> None:
     try:
+        entry = {key: (value if key in _UNMASKED_LOG_KEYS else _mask(value)) for key, value in entry.items()}
         LOG.parent.mkdir(parents=True, exist_ok=True)
         with LOG.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), **entry}, ensure_ascii=False) + "\n")
+            f.write(json.dumps({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), **entry}, ensure_ascii=False,
+                               default=str) + "\n")
     except OSError:
         pass
 
@@ -282,12 +298,57 @@ def _join_shell_continuations(command: str, shell: str) -> str:
     return "".join(result)
 
 
+# $(...), `...`, <(...) and >(...) run a command inside another one. The inner command is its own piece.
+_SUBSTITUTION = re.compile(r"\$\(|[<>]\(|`")
+_SUBSTITUTION_EDGE = re.compile(r"\$\(|[<>]\(|`|\)")
+# Programs that only run another program: `sudo sendmail` is sendmail.
+WRAPPER_PROGRAMS = {"sudo", "doas", "env", "nohup", "time", "timeout", "nice", "ionice", "stdbuf", "command",
+                    "exec", "xargs", "setsid"}
+_WRAPPER_VALUE_FLAGS = {"-u", "-g", "-n", "-k", "-s", "-c", "-h", "-p", "-i", "-o", "-e"}  # flag + its value
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
+
+
+def _program_name(word: str) -> str:
+    return word.strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+
+
+def _unwrap(words: list[str]) -> list[str]:
+    """Drop leading VAR=value words and wrapper programs (sudo, env, nohup, timeout 30, xargs ...) with their flags.
+    A wrapper with nothing after it (`env`) is left as it is."""
+    i = 0
+    while i < len(words):
+        if _ASSIGNMENT.match(words[i]):
+            i += 1
+            continue
+        if _program_name(words[i]) not in WRAPPER_PROGRAMS:
+            break
+        j = i + 1
+        while j < len(words):
+            word = words[j]
+            if word.startswith("-"):
+                j += 2 if (word.lower() in _WRAPPER_VALUE_FLAGS and j + 1 < len(words)) else 1
+            elif _ASSIGNMENT.match(word) or _DURATION.match(word):
+                j += 1
+            else:
+                break
+        if j >= len(words):
+            break
+        i = j
+    return words[i:] if i < len(words) else words
+
+
 def _command_segments(command: str):
-    """Yield (program, rest_lower, words) for each piece of a shell/PowerShell command."""
+    """Yield (program, rest_lower, words) for each piece of a shell/PowerShell command. A command inside
+    $(...), backticks, or <(...) is a piece too, and a wrapper like sudo or env is looked through."""
     if not isinstance(command, str) or not command.strip():
         return
-    for segment in _SEGMENTS.split(command):
-        words = segment.strip().split()
+    pieces = _SEGMENTS.split(command)
+    if _SUBSTITUTION.search(command):
+        # Keep the plain reading too: in PowerShell a backtick is an escape, not a command inside a command.
+        pieces += _SEGMENTS.split(_SUBSTITUTION_EDGE.sub("\n", command))
+    for segment in pieces:
+        words = _unwrap(segment.strip().split())
         if not words:
             continue
         program = words[0].strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
@@ -298,6 +359,8 @@ def _command_segments(command: str):
 def read_only(command: str) -> bool:
     """True only when every piece of the command is a known read-only program with no file-writing redirect."""
     if not isinstance(command, str) or not command.strip() or _WRITE_REDIRECT.search(command):
+        return False
+    if _SUBSTITUTION.search(command):  # `cat $(rm -rf build)` starts with cat and still deletes
         return False
     saw = False
     for program, rest, words in _command_segments(command):
@@ -1183,10 +1246,14 @@ def scheduled_turn(turn_key: str) -> bool:
 # Purchase words for a click, a typed field, or a URL. "cart" is not one of them: adding to a cart is still browsing.
 # Bare "order" is not one either. "git checkout" is excluded with a fixed-width lookbehind.
 MONEY_RE = re.compile(
-    r"(?i)(?<!git )check\s*out"
-    r"|\bplace\s+(?:an?\s+)?order\b"
+    # "Check out this video" is a link, not a till. "Checkout" and "Proceed to check out" are the till.
+    r"(?i)(?<!git )\bcheckout\b"
+    r"|(?<!git )\bcheck\s+out\b(?!\s+(?:this|that|these|those|the|our|what|how|more|a|an|some)\b)"
+    r"|\b(?:place|submit|complete|confirm)\s+(?:(?:an?|your|my|the)\s+)?(?:order|purchase)\b"
+    r"|\border\s+now\b"
+    r"|\bpurchas(?:e|es|ing)\b"
     r"|\bbuy(?:ing)?\b"
-    r"|\bpay(?:ing|ment|ments)?\b"
+    r"|\bpay(?:ing|ment|ments)?\b(?!\s+attention)"
     r"|\bpaid\b"
     r"|\bsubscri(?:be|ption|ptions)\b"
     r"|\bdonat(?:e|ion|ions)\b"
@@ -1200,6 +1267,15 @@ MONEY_RE = re.compile(
 PAYMENT_API_RE = re.compile(
     r"(?i)stripe\.com|paypal\.com|squareup\.com|checkout\.stripe|/v1/payments?|/checkout(?:[/?#\s\"']|$)"
 )
+# In a shell the same words are also folder names (`cd src/checkout`), so a path only counts inside a URL.
+PAYMENT_URL_RE = re.compile(
+    r"(?i)stripe\.com|paypal\.com|squareup\.com|checkout\.stripe"
+    r"|https?://[^\s\"']*(?:/v1/payments?|/checkout(?:[/?#\"']|\s|$))"
+)
+# A lone Send, Delete, or Archive is an email decision only when the screen is a mail app.
+LONE_EMAIL_LABEL_RE = re.compile(r"(?i)^\W*(?:send|delete|archive)\W*(?:\(.*\)\W*)?$")
+MAIL_SCREEN_RE = re.compile(r"(?i)\b(?:gmail|outlook|inbox|compose|new message|recipients?|subject|e-?mail)\b")
+SEND_SHORTCUT_RE = re.compile(r"(?i)^(?:ctrl|control|cmd|command|meta|super)\s*[+\-]\s*(?:enter|return)$")
 # Programs that send mail. Reading mail, or the words appearing in an echo, is not a send.
 MAIL_PROGRAMS = {"sendmail", "mailx", "msmtp", "swaks", "mutt", "send-mailmessage"}
 # A stripe/paypal command that actually creates a charge, not `stripe listen`.
@@ -1257,8 +1333,11 @@ def _terminal_area_view(command: str) -> str | None:
     """'money' or 'email' for a command that sends mail or hits a payment API. Mentions in a read do not count."""
     if not command.strip():
         return None
-    paying = bool(PAYMENT_API_RE.search(command))
+    paying = bool(PAYMENT_URL_RE.search(command))
+    reads = True
     for program, rest, words in _command_segments(command):
+        if program not in READ_ONLY_COMMANDS:
+            reads = False
         # curl supports SMTP directly, including implicit SMTP via --proto-default.
         # Parse tokens rather than treating mentions in echo/cat as sends. Fail
         # conservatively on an SMTP request or envelope recipient, even if the
@@ -1280,7 +1359,8 @@ def _terminal_area_view(command: str) -> str | None:
             return "email"
         if program in {"stripe", "paypal"} and any(word.strip("-") in PAYMENT_CLI_WORDS for word in rest):
             paying = True
-    if paying and not read_only(command):
+    # Every piece counted, including the ones inside $(...): `echo $(curl ... stripe.com ...)` is not a read.
+    if paying and not (reads and read_only(_SUBSTITUTION_EDGE.sub("\n", command))):
         return "money"
     return None
 
@@ -1372,6 +1452,32 @@ def _email_in_text(text: str) -> bool:
     return False
 
 
+def _mail_screen(elements) -> bool:
+    """True when the current screen's labels look like a mail app (Inbox, Compose, Subject, ...)."""
+    for row in elements or []:
+        if isinstance(row, dict) and MAIL_SCREEN_RE.search(f"{row.get('name') or ''} {row.get('value') or ''}"):
+            return True
+    return False
+
+
+def _lone_email_label(tool: str, args: dict, elements, finds) -> bool:
+    labels = _labels_for_call(args, elements).split("\n") + _find_labels_for_call(args, finds)
+    element = args.get("element")
+    if isinstance(element, str) and not element.strip().isdigit():
+        labels.append(element)
+    return any(LONE_EMAIL_LABEL_RE.match(label) for label in labels if label.strip())
+
+
+def _send_shortcut(tool: str, args: dict) -> bool:
+    name = tool.lower()
+    if not (name == CUA_TOOL or name.endswith("computer_use")) or str(args.get("action") or "").lower() != "key":
+        return False
+    keys = args.get("keys") or args.get("key") or args.get("text") or ""
+    if isinstance(keys, (list, tuple)):
+        keys = "+".join(str(key) for key in keys)
+    return bool(SEND_SHORTCUT_RE.match(str(keys).strip()))
+
+
 def sensitive_step(tool: str, args: dict, elements=None, finds=None) -> str | None:
     """'money' or 'email' when this call is a purchase or an email decision. None for reads, navigation, and looking."""
     tool = str(tool or "")
@@ -1383,12 +1489,16 @@ def sensitive_step(tool: str, args: dict, elements=None, finds=None) -> str | No
         return _terminal_area(command, tool)
     if _email_tool_decision(tool, args):
         return "email"
+    if _send_shortcut(tool, args) and _mail_screen(elements):
+        return "email"  # Ctrl+Enter sends the open message
     if not _scans_surface(tool, args):
         return None
     text = _surface_text(tool, args, elements, finds)
     if MONEY_RE.search(text) or PAYMENT_API_RE.search(text):
         return "money"
     if _email_in_text(text):
+        return "email"
+    if _mail_screen(elements) and _lone_email_label(tool, args, elements, finds):
         return "email"
     return None
 
@@ -1683,7 +1793,8 @@ def apply_settings(ctx) -> None:
     try:
         cua = str(get("computer_use_mode", default=CUA_MODE)).lower()
         driver = str(get("computer_use_driver", default=CUA_DRIVER)).lower()
-        money_email = str(get("money_email_check", default=MONEY_EMAIL_MODE)).lower()
+        money_email = get("money_email_check", default=MONEY_EMAIL_MODE)
+        money_email = "on" if money_email is True else str(money_email).lower()  # unquoted YAML `on` is True
         workflow = str(get("workflow_mode", default=WORKFLOW_MODE)).lower()
         scope = str(get("scope_mode", default=MODE)).lower()
         budget = int(get("look_step_budget", default=LOOK_STEP_BUDGET))
@@ -1900,7 +2011,7 @@ def register(ctx):
     def on_pre_llm_call(session_id="", turn_id=None, user_message="", conversation_history=None, **_):
         apply_settings(ctx)
         with _LOCK:
-            if len(_ASKS) >= _MAX:
+            if len(_ASKS) >= _MAX and (session_id or "-") not in _ASKS:
                 _ASKS.pop(next(iter(_ASKS)))
             _ASKS[session_id or "-"] = {"turn_id": turn_id, "ask": _text(user_message),
                                         "previous": _previous_reply(conversation_history), "intent": None}

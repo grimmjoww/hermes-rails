@@ -77,7 +77,7 @@ def test_money_email_check_defaults_to_on_and_has_no_off(tmp_path):
     block = text.split("money_email_check:", 1)[1]
     choices = block.split("choices:", 1)[1].split("\n", 1)[0]
     assert "on" in choices and "shadow" in choices and "off" not in choices
-    assert "default: on" in block
+    assert 'default: "on"' in block  # quoted: a bare YAML `on` loads as True
     rails.ask_d1 = fake_d1()
     rails.apply_settings(SettingsCtx({"money_email_check": "shadow"}))
     assert rails.MONEY_EMAIL_MODE == "shadow"
