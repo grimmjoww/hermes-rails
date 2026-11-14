@@ -152,3 +152,56 @@ def test_a_known_session_does_not_evict_another(tmp_path):
         start(session_id=f"s{i}", turn_id="1", user_message="hello there", conversation_history=[])
     start(session_id="s5", turn_id="2", user_message="hello again", conversation_history=[])
     assert "s0" in rails._ASKS and len(rails._ASKS) == rails._MAX
+
+
+# --- review follow-ups on PR #11 ---------------------------------------------
+
+@pytest.mark.parametrize("command", [
+    "env -i rm cat", "sudo -n rm cat", "sudo -u rm cat build", "sudo -u root rm -rf build", "timeout -k 5 30 rm x",
+    "nice -n 5 git push", "xargs -n 1 rm",
+])
+def test_wrapper_flags_cannot_hide_a_mutation(tmp_path, command):
+    rails = load(tmp_path)
+    assert rails.mutating(command) is True, command
+    assert rails.read_only(command) is False, command
+
+
+@pytest.mark.parametrize("command", ["sudo -n sendmail a@b.c", "env -i msmtp a@b.c", "sudo -u mail sendmail a@b.c"])
+def test_wrapper_flags_cannot_hide_a_mail_program(tmp_path, command):
+    assert load(tmp_path).sensitive_step("terminal", {"command": command}) == "email"
+
+
+@pytest.mark.parametrize("command", [
+    "echo '$(sendmail user@example.com)'", "echo '$(rm -rf build)'", "echo '`git push -f`'",
+    "grep -n '$(' README.md",
+])
+def test_a_single_quoted_substitution_is_only_text(tmp_path, command):
+    rails = load(tmp_path)
+    assert rails.sensitive_step("terminal", {"command": command}) is None
+    assert rails.mutating(command) is False
+    assert rails.read_only(command) is True
+
+
+@pytest.mark.parametrize("command", [
+    'echo "it\'s $(rm -rf build)"', 'echo "$(rm -rf build)"', "echo 'a' $(rm -rf build)", "echo it's $(rm -rf build)",
+])
+def test_a_live_substitution_near_quotes_still_counts(tmp_path, command):
+    rails = load(tmp_path)
+    assert rails.mutating(command) is True, command
+    assert rails.read_only(command) is False, command
+
+
+@pytest.mark.parametrize("command", [
+    "git log --grep=stripe.com", "git log -S paypal.com | head", "grep -rn stripe.com src", "cat notes/stripe.com.md",
+])
+def test_reading_about_payments_is_not_a_payment(tmp_path, command):
+    assert load(tmp_path).sensitive_step("terminal", {"command": command}) is None
+
+
+@pytest.mark.parametrize("command", [
+    "curl -X POST shop.example/checkout -d amount=500", "curl -d amount=5 localhost:3000/checkout",
+    "wget --post-data amount=5 shop.example/v1/payments", "sudo -n curl -X POST shop.example/checkout",
+    "curl -X POST https://shop.example/checkout",
+])
+def test_a_schemeless_payment_url_is_still_money(tmp_path, command):
+    assert load(tmp_path).sensitive_step("terminal", {"command": command}) == "money"
