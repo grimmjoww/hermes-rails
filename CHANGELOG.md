@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.5
+
+- Fix a money/email bypass on continued Cmd commands. A caret at the end of a line joins that line to the next one (`curl ^` then `--url smtp://...`), the same class of gap 0.4.3 closed for Bash `\` and PowerShell backticks. `cmd` uses the caret rule; an unnamed `terminal` or `shell` tool is checked against all three. `^^` is a literal caret and does not continue the line.
+
 ## 0.4.4
 
 - Fix `money_email_check` in `plugin.yaml`: the unquoted `on` loaded as the boolean `True`, so switching back from `shadow` to `on` did not take. The choice and default are now quoted, and a `True` value is read as `on`.

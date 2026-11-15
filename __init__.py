@@ -298,6 +298,34 @@ def _join_shell_continuations(command: str, shell: str) -> str:
     return "".join(result)
 
 
+def _join_cmd_continuations(command: str) -> str:
+    """Join Cmd lines continued by a caret, in one left-to-right pass.
+
+    A caret escapes the next character. ``^^`` is one literal caret, so that
+    caret does not continue the line; an odd caret immediately before LF or
+    CRLF does. Other caret escapes are left in place. This is continuation
+    handling, not a full cmd parser.
+    """
+    result = []
+    i = 0
+    limit = len(command)
+    while i < limit:
+        if command[i] == "^" and i + 1 < limit:
+            if command[i + 1] == "^":
+                result.append("^")
+                i += 2
+                continue
+            if command[i + 1] == "\n":
+                i += 2
+                continue
+            if command[i + 1:i + 3] == "\r\n":
+                i += 3
+                continue
+        result.append(command[i])
+        i += 1
+    return "".join(result)
+
+
 # $(...), `...`, <(...) and >(...) run a command inside another one. The inner command is its own piece.
 _SUBSTITUTION = re.compile(r"\$\(|[<>]\(|`")
 _SUBSTITUTION_EDGE = re.compile(r"\$\(|[<>]\(|`|\)")
@@ -1370,13 +1398,18 @@ def _terminal_area(command: str, shell: str = "") -> str | None:
     Keep the original view as well so normalization cannot hide a previously
     detected action, including newlines in comments. Ambiguous physical command
     boundaries may conservatively require authorization even in known shells.
+    Cmd's caret is included: ``cmd`` uses only that rule, and an unnamed shell
+    is checked against bash, PowerShell, and cmd.
     """
     shell = shell.lower()
-    if shell in {"bash", "powershell"}:
+    if shell == "cmd":
+        views = [command, _join_cmd_continuations(command)]
+    elif shell in {"bash", "powershell"}:
         views = [command, _join_shell_continuations(command, shell)]
     else:
         views = [command, _join_shell_continuations(command, "bash"),
-                 _join_shell_continuations(command, "powershell")]
+                 _join_shell_continuations(command, "powershell"),
+                 _join_cmd_continuations(command)]
     for view in dict.fromkeys(views):
         area = _terminal_area_view(view)
         if area:

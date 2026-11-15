@@ -74,6 +74,64 @@ def test_benign_continued_commands_do_not_ask_for_authorization(tmp_path, monkey
     assert ["authorize"] not in seen
 
 
+@pytest.mark.parametrize("continuation", ["^\n", "^\r\n"])
+@pytest.mark.parametrize("template", [
+    "curl {c} --url smtps://example.invalid:465 -T message.txt",
+    "cu{c}rl --url smtp://example.invalid:25 -T -",
+    "curl --url sm{c}tps://example.invalid:465 -T -",
+    "curl --mail-{c}rcpt=a@example.invalid -T - example.invalid",
+    "curl --proto-default {c} smtps example.invalid -T -",
+    "echo ready && curl {c} --url=smtp://example.invalid -T -",
+    "curl {c} --url smtp://example.invalid {c} --mail-rcpt a@example.invalid -T -",
+    "send{c}mail a@example.invalid",
+    "stripe {c} charges create",
+    "curl -X POST https://api.str{c}ipe.com/v1/charges",
+])
+def test_cmd_caret_continuation_is_detected(tmp_path, continuation, template):
+    rails = load(tmp_path)
+    command = template.format(c=continuation)
+    area = "money" if "stripe" in template or "str{c}ipe" in template else "email"
+    assert rails._terminal_area(command, "cmd") == area
+    # An unnamed terminal may be cmd, so the same command is still detected.
+    assert rails._terminal_area(command) == area
+    assert rails._terminal_area(command, "terminal") == area
+
+
+def test_cmd_continued_curl_is_held(tmp_path, monkeypatch):
+    rails, ctx, _ = _cua_setup(tmp_path, monkeypatch, mode="off", ask="read my inbox")
+    seen = _install(rails)
+    command = "curl ^\r\n --url smtps://example.invalid:465 -T message.txt"
+    result = ctx.hooks["pre_tool_call"](tool_name="cmd", args={"command": command},
+                                       session_id="s", turn_id="t1")
+    assert [call for call in seen if "authorize" in call] == [["authorize"]]
+    assert result and result["action"] == "block" and "email check" in result["message"]
+
+
+def test_bash_does_not_treat_a_cmd_caret_as_a_continuation(tmp_path):
+    rails = load(tmp_path)
+    command = "curl ^\n --url smtp://example.invalid -T -"
+    assert rails._terminal_area(command, "bash") is None
+    assert rails._terminal_area(command, "powershell") is None
+    assert rails._terminal_area(command, "cmd") == "email"
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_a_doubled_cmd_caret_does_not_continue(tmp_path, newline):
+    """^^ is a literal caret. Joining that newline would hide the boundary and see a send."""
+    rails = load(tmp_path)
+    command = "curl ^^" + newline + " --url smtp://example.invalid -T -"
+    assert rails._terminal_area(command, "cmd") is None
+    # An odd caret still continues: ^^^ is one literal caret plus a continuation.
+    continued = "curl ^^^" + newline + " --url smtp://example.invalid -T -"
+    assert rails._terminal_area(continued, "cmd") == "email"
+
+
+def test_printing_a_continued_smtp_url_is_not_a_send(tmp_path):
+    rails = load(tmp_path)
+    assert rails._terminal_area("printf '%s' ^\n smtp://example.invalid", "cmd") is None
+    assert rails._terminal_area("echo ready^\r\nworld", "cmd") is None
+
+
 def test_actual_newlines_remain_command_boundaries(tmp_path):
     rails = load(tmp_path)
     assert rails._terminal_area("echo ready\ncurl --url smtp://example.invalid -T -") == "email"
